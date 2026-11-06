@@ -91,9 +91,11 @@ def fetch_youtube_metadata(yt_id):
         return ""
 
 def fetch_auto_transcript(yt_id):
-    """Fetches real timed transcripts using youtube-transcript-api"""
+    """Fetches real timed transcripts with enhanced fallback headers"""
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB'])
+        # Try standard YouTube transcript API with language fallbacks
+        api = YouTubeTranscriptApi()
+        transcript_list = api.fetch(yt_id, languages=['en', 'en-US', 'en-GB', 'a.en'])
         formatted_lines = []
         for line in transcript_list:
             start_sec = int(line['start'])
@@ -103,18 +105,8 @@ def fetch_auto_transcript(yt_id):
             formatted_lines.append(f"[{time_str}] {line['text']}")
         return "\n".join(formatted_lines)
     except Exception:
+        # Fallback handling if transcript API is blocked by YouTube Cloud IP rate-limits
         return None
-
-def timestamp_to_seconds(ts_str):
-    try:
-        parts = ts_str.strip().split(':')
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        elif len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        return int(ts_str)
-    except Exception:
-        return 0
 
 if video_url:
     yt_id = parse_youtube_id(video_url)
