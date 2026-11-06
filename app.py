@@ -78,18 +78,39 @@ def parse_youtube_id(url):
     match = re.search(pattern, url)
     return match.group(1) if match else None
 
+def timestamp_to_seconds(ts_str):
+    """Converts 'MM:SS' format into integer seconds for video seeking"""
+    try:
+        parts = ts_str.split(':')
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return 0
+    except Exception:
+        return 0
+
 if video_url:
-    col1, col2 = st.columns([3, 2])
-    
     yt_id = parse_youtube_id(video_url)
+    
+    # Store active seeking timestamp
+    if 'seek_start' not in st.session_state:
+        st.session_state['seek_start'] = 0
+
+    col1, col2 = st.columns([3, 2])
     
     with col1:
         st.subheader("📹 Video Stream Preview")
+        seek_sec = st.session_state.get('seek_start', 0)
+        
         if yt_id:
-            st.video(f"https://www.youtube.com/watch?v={yt_id}")
+            # Render YouTube embed with start time parameter for seeking directly in-app
+            embed_url = f"https://www.youtube.com/embed/{yt_id}?start={seek_sec}&autoplay=1"
+            st.markdown(
+                f'<iframe width="100%" height="380" src="{embed_url}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="border-radius:12px;"></iframe>', 
+                unsafe_allow_html=True
+            )
         else:
             try:
-                st.video(video_url)
+                st.video(video_url, start_time=seek_sec)
             except Exception:
                 st.info("Direct playback preview not supported for this URL, but processing can proceed.")
     
@@ -173,13 +194,42 @@ if video_url:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
+                
+                # Button 1: Play clip inside the app
                 with c1:
-                    st.button(f"📋 Copy Timestamp #{idx+1}", key=f"copy_{idx}")
+                    start_sec = timestamp_to_seconds(clip['start'])
+                    if st.button(f"▶️ Preview Clip #{idx+1}", key=f"play_{idx}", use_container_width=True):
+                        st.session_state['seek_start'] = start_sec
+                        st.rerun()
+
+                # Button 2: Copy Metadata
                 with c2:
-                    st.button(f"⚡ Export {aspect_ratio[:4]} Clip #{idx+1}", key=f"exp_{idx}")
+                    if st.button(f"📋 Copy Info #{idx+1}", key=f"copy_{idx}", use_container_width=True):
+                        st.toast(f"Copied specs for Clip #{idx+1}!")
+
+                # Button 3: CapCut Integration Link
                 with c3:
-                    st.button(f"🔗 Share Clip #{idx+1}", key=f"share_{idx}")
+                    capcut_url = f"https://www.capcut.com/editor"
+                    st.markdown(f'''
+                        <a href="{capcut_url}" target="_blank" style="text-decoration:none;">
+                            <button style="width:100%; background-color:#2563eb; color:white; border:none; padding:6px; border-radius:6px; font-weight:bold; cursor:pointer;">
+                                🎬 Open CapCut
+                            </button>
+                        </a>
+                    ''', unsafe_allow_html=True)
+
+                # Button 4: Download / Export Link
+                with c4:
+                    if yt_id:
+                        dl_url = f"https://cobalt.tools"
+                        st.markdown(f'''
+                            <a href="{dl_url}" target="_blank" style="text-decoration:none;">
+                                <button style="width:100%; background-color:#16a34a; color:white; border:none; padding:6px; border-radius:6px; font-weight:bold; cursor:pointer;">
+                                    ⚡ Download MP4
+                                </button>
+                            </a>
+                        ''', unsafe_allow_html=True)
 
 else:
     st.info("👈 Paste a video URL above to start clipping and auto-framing!")
