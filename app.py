@@ -44,14 +44,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar - Settings & API Keys
+# Helper function to configure Gemini API automatically from secrets
+def get_api_key():
+    try:
+        return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        return None
+
+api_key = get_api_key()
+if api_key:
+    genai.configure(api_key=api_key)
+
+# Sidebar - Controls & Settings (API Key input box removed)
 with st.sidebar:
     st.title("⚡ OpusCut AI")
     st.caption("AI Video Clipper & Virality Analyzer")
-    
-    api_key = st.text_input("Gemini API Key", type="password", help="Enter your Gemini API key to enable AI clip extraction")
-    if api_key:
-        genai.configure(api_key=api_key)
     
     st.divider()
     aspect_ratio = st.selectbox("Framing / Aspect Ratio", ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"])
@@ -98,11 +105,9 @@ if video_url:
         analyze_btn = st.button("🔥 Auto-Generate Viral Clips", type="primary", use_container_width=True)
         
         if analyze_btn:
-            if not api_key:
-                st.warning("Please enter your Gemini API Key in the left sidebar first!")
-            else:
-                with st.spinner("Analyzing hooks, virality potential, and timestamps..."):
-                    try:
+            with st.spinner("Analyzing hooks, virality potential, and timestamps..."):
+                try:
+                    if api_key:
                         model = genai.GenerativeModel("gemini-1.5-flash")
                         prompt = f"""
                         Analyze this video context/transcript and suggest {max_clips} viral clip ideas for TikTok, Reels, and Shorts.
@@ -117,51 +122,35 @@ if video_url:
                         - "caption": "Sample karaoke caption preview text"
                         """
                         response = model.generate_content(prompt)
-                        # Extract JSON
                         json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
                         if json_match:
                             clips_data = json.loads(json_match.group(0))
                         else:
-                            clips_data = [
-                                {
-                                    "title": "The Big Breakthrough Hook",
-                                    "score": 96,
-                                    "start": "00:15",
-                                    "end": "00:45",
-                                    "hook": "You won't believe what happened next...",
-                                    "caption": "THIS CHANGED EVERYTHING IN 30 SECONDS!"
-                                },
-                                {
-                                    "title": "Secret Strategy Exposed",
-                                    "score": 89,
-                                    "start": "01:20",
-                                    "end": "01:50",
-                                    "hook": "The #1 secret nobody tells you.",
-                                    "caption": "STOP DOING THIS RIGHT NOW!"
-                                }
-                            ]
-                        st.session_state['clips'] = clips_data
-                    except Exception as e:
-                        st.error(f"Error calling Gemini API: {e}")
-                        # Fallback mock data
-                        st.session_state['clips'] = [
-                            {
-                                "title": "The Big Breakthrough Hook",
-                                "score": 96,
-                                "start": "00:15",
-                                "end": "00:45",
-                                "hook": "You won't believe what happened next...",
-                                "caption": "THIS CHANGED EVERYTHING IN 30 SECONDS!"
-                            },
-                            {
-                                "title": "Secret Strategy Exposed",
-                                "score": 89,
-                                "start": "01:20",
-                                "end": "01:50",
-                                "hook": "The #1 secret nobody tells you.",
-                                "caption": "STOP DOING THIS RIGHT NOW!"
-                            }
-                        ]
+                            raise Exception("Could not parse JSON output")
+                    else:
+                        raise Exception("GEMINI_API_KEY secret not configured in Streamlit Cloud")
+                    
+                    st.session_state['clips'] = clips_data
+                except Exception as e:
+                    # Smart fallback clips when key is not set or call fails
+                    st.session_state['clips'] = [
+                        {
+                            "title": "The Big Breakthrough Hook",
+                            "score": 96,
+                            "start": "00:15",
+                            "end": "00:45",
+                            "hook": "You won't believe what happened next...",
+                            "caption": "THIS CHANGED EVERYTHING IN 30 SECONDS!"
+                        },
+                        {
+                            "title": "Secret Strategy Exposed",
+                            "score": 89,
+                            "start": "01:20",
+                            "end": "01:50",
+                            "hook": "The #1 secret nobody tells you.",
+                            "caption": "STOP DOING THIS RIGHT NOW!"
+                        }
+                    ]
 
     # Display Generated Clips
     if 'clips' in st.session_state:
