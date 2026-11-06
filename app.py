@@ -1,164 +1,3 @@
-
-Conversation with Gemini
-ok i need a clipper application that copies opus pro but you make it for me for free using code help me
-
-I will now generate the complete, single-file video clipping application ("OpusCut AI Studio") inspired by Opus Clip / Opus Pro.
-
-This React web app features:
-
-Dark-mode Glassmorphism UI with side-by-side video previewer, interactive canvas waveform timeline, and active clip controls.
-
-Dynamic Framing & Aspect Ratios: Instant preview switching between 9:16 (Shorts/TikTok/Reels), 1:1, and 16:9 with draggable face/speaker framing box overlay.
-
-Interactive Timeline & Trimmer: Auto-detected clip segments with Virality Scores, drag handles for custom trimming, and instant playback seek.
-
-Karaoke Auto-Captions: Dynamic subtitling previewed over the video with real-time text synchronization and custom styling options (fonts, colors, position, background box, animations).
-
-Gemini AI Integration: Built-in prompt capabilities to analyze clip transcripts, auto-generate high-converting headlines, generate viral hook scripts, and compute virality scores using gemini-3-flash-preview.
-
-Export & Queue Management: Batch export simulation with progress indicators, caption copies, and instant simulated video downloads.
-
-OpusCut AI Studio
-Nov 6, 10:49 AM
-I have created the OpusCut AI Studio web application with full video trimming capabilities, aspect ratio reframing, dynamic karaoke subtitling, and Gemini API integration for instant virality clip generation.
-
-now make it the same except u can use links instead of downloaded videos to help save storage on my computer
-
-I will now update the application to support direct web video link ingestion (YouTube, direct MP4/HLS links, Vimeo streams) so users can import and clip long-form content using web links without using local disk storage.
-
-Here are the updates to App.jsx:
-
-OpusCut AI Studio
-Nov 6, 10:49 AM
-Key Updates Added:
-URL Ingestion & Web Stream Ingestion: Added a input bar to import video stream URLs (YouTube links, direct MP4, HLS).
-
-YouTube & Web Player Embed Support: Built-in support to stream directly inside an iFrame or direct stream tag without storing local files on disk.
-
-Storage-Free Metadata & Clip Copying: Added direct metadata, title, and timestamp copying to clipboard for quick publishing to social platforms.
-
-now if i wanted to share this.. give me the script to put into github with streamlit as the app site now go make the code you got this
-
-2. Deploy to Streamlit Community Cloud (100% Free Hosting)
-Go to share.streamlit.io and log in with GitHub.
-
-Click "New app".
-
-Select your repository opuscut-ai, branch main, and main file path app.py.
-
-Click "Deploy!". Your app will be live on a custom .streamlit.app URL!
-
-🌟 Features
-Direct web video stream ingestion (YouTube, direct MP4, HLS).
-
-Dynamic framing & aspect ratio selector (9:16 Vertical, 1:1 Square, 16:9 Widescreen).
-
-Gemini API virality analysis to compute clip scores, hook titles, and karaoke subtitling pre-render tags.
-
-Zero local storage footprint.
-'''
-
-with open("README.md", "w") as f:
-f.write(readme_code)
-
-print("Files created successfully.")
-
-
-```text?code_stdout&code_event_index=1
-Files created successfully.
-
-Your files are ready to deploy to GitHub and Streamlit Cloud!
-
-PY icon
-app
- PY 
-TXT icon
-requirements
- TXT 
-MD icon
-README
- MD 
-Step-by-Step Deployment Instructions
-1. Save Your 3 Project Files locally
-Create a folder on your computer named opuscut-ai and place the generated files inside it:
-
-app.py (The main Streamlit Python application)
-
-requirements.txt (Tells Streamlit Cloud which packages to install)
-
-README.md (Project documentation)
-
-2. Push to GitHub
-Open your terminal/command prompt inside your project folder and run:
-
-Bash
-git init
-git add .
-git commit -m "Initial commit for OpusCut AI Studio"
-git branch -M main
-git remote add origin https://github.com/<YOUR_GITHUB_USERNAME>/opuscut-ai.git
-git push -u origin main
-3. Deploy Free on Streamlit Cloud
-Go to share.streamlit.io and log in with your GitHub account.
-
-Click the "New app" button.
-
-Select your repository (opuscut-ai), branch (main), and set the main file path to app.py.
-
-Click "Deploy!".
-
-Streamlit Cloud will automatically build your app and give you a live shareable URL (e.g., [https://opuscut-ai.streamlit.app](https://opuscut-ai.streamlit.app)) that you can share with anyone!
-
-I will fix the syntax error in App.jsx by removing duplicate code blocks and ensuring all function scopes and return statements are properly closed.
-
-Here is the corrected single-file code for App.jsx.
-
-OpusCut AI Studio
-
-
-
-I have fixed the compilation error by removing the duplicate JSX blocks and correctly closing the main App component function. The web application should now compile and run seamlessly.
-
-where do i go to put the code?? github itself have a terminal i can paste
-
-GitHub does not have a built-in terminal directly on their website to run git commands or paste code into.
-
-However, you have 2 super easy ways to put your code on GitHub:
-
-Option 1: Directly on the GitHub Website (Easiest — No Terminal Needed!) 🚀
-You can create the files directly in your web browser:
-
-Go to GitHub.com and sign in.
-
-Click the "+" icon in the top-right corner and select New repository.
-
-Name your repository opuscut-ai, leave it Public, and click Create repository.
-
-On the next screen, click the link that says "creating a new file" (or Add file ➔ Create new file).
-
-For the file name, type app.py, then copy and paste the app.py python code into the big text box.
-
-Scroll down and click Commit changes (green button).
-
-Repeat the same steps to create requirements.txt and README.md.
-
-Done! Your code is on GitHub without touching a terminal.
-
-Option 2: Using the Terminal / Command Prompt on your Computer 💻
-If you want to use the commands:
-
-On Windows: Press the Windows Key, type Command Prompt (or PowerShell), and press Enter.
-
-On Mac: Press Cmd + Space, type Terminal, and press Enter.
-
-Navigate into the folder where you created your files using the cd command (for example: cd Desktop/opuscut-ai), and then paste the git commands there.
-
-
-
-
-
-Gemini is AI and can make mistakes.
-
 import streamlit as st
 import google.generativeai as genai
 import re
@@ -228,8 +67,7 @@ st.write("")
 video_url = st.text_input("🔗 Paste Video Link (YouTube MP4, Direct Link, HLS):", placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
 def parse_youtube_id(url):
-    pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/
-\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
+    pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
     match = re.search(pattern, url)
     return match.group(1) if match else None
 
@@ -334,7 +172,7 @@ if video_url:
             with st.container():
                 st.markdown(f"""
                 <div class="stCard">
-                    <div style="display: flex; justify-space-between; align-items: center;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
                         <h4 style="margin:0; color:#38bdf8;">Clip #{idx+1}: {clip['title']}</h4>
                         <span class="score-badge">🔥 Virality Score: {clip['score']}/100</span>
                     </div>
@@ -348,7 +186,7 @@ if video_url:
                 
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.button(f"📋 Copy Timestamp & Metadata #{idx+1}", key=f"copy_{idx}")
+                    st.button(f"📋 Copy Timestamp #{idx+1}", key=f"copy_{idx}")
                 with c2:
                     st.button(f"⚡ Export {aspect_ratio[:4]} Clip #{idx+1}", key=f"exp_{idx}")
                 with c3:
