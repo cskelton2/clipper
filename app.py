@@ -122,6 +122,11 @@ def parse_vtt_timestamps(vtt_content):
             seen.add(clean_text)
             formatted.append(f"[{current_time}] {clean_text}")
             
+    # Sample down long transcripts evenly across the entire duration so 3+ hour videos aren't cut off at 30 mins
+    if len(formatted) > 1000:
+        step = len(formatted) // 1000
+        formatted = formatted[::step]
+        
     return "\n".join(formatted)
 
 def fetch_auto_transcript_ytdlp(url):
@@ -258,23 +263,24 @@ if video_url:
             elif not transcript_input and not video_title:
                 st.warning("Please paste a transcript or context text into the text area above so Gemini can analyze the real video content.")
             else:
-                with st.spinner(f"Matching exact timestamps and subtitles..."):
+                with st.spinner(f"Matching exact timestamps across full video length..."):
                     models_to_try = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
                     raw_text = None
                     last_error = None
                     
                     prompt = f"""
-                    You are an expert short-form video editor analyzing a long video or podcast episode (up to 3 hours in duration).
+                    You are an expert short-form video editor analyzing a long video or podcast episode (up to 3+ hours in duration).
                     VIDEO TITLE: {video_title if video_title else "User Video / Podcast"}
                     
-                    TIMED TRANSCRIPT (Contains exact timestamp markers like [MM:SS] or [HH:MM:SS]):
-                    {transcript_input[:40000] if transcript_input else "Title: " + video_title}
+                    TIMED TRANSCRIPT (Spans the FULL duration from start to final minutes):
+                    {transcript_input}
                     
-                    CRITICAL REQUIREMENT FOR PODCASTS & LONG VIDEOS:
-                    1. Read the exact timestamps formatted as [MM:SS] or [HH:MM:SS] across the ENTIRE transcript.
-                    2. Extract {max_clips} viral moments evenly distributed across the FULL length of the video (beginning, middle hour, and final hour). Do NOT limit selection to early minutes.
-                    3. The "start" and "end" MUST match exact timestamp tags from the transcript where text is spoken.
-                    4. The "hook" and "caption" MUST be word-for-word quotes from the transcript at that EXACT start timestamp.
+                    CRITICAL REQUIREMENT FOR FULL-LENGTH SCANS:
+                    1. Examine timestamps from the beginning (00:00), the middle sections (e.g. 45:00, 1:15:00), and the final third of the transcript up to the very end.
+                    2. Select {max_clips} viral moments spread across the WIDE RANGE of the ENTIRE video.
+                    3. Do NOT cluster all clips in the first 30 minutes! Ensure clips come from different hours/sections of the full video.
+                    4. The "start" and "end" MUST match exact timestamp tags from the transcript where text is spoken.
+                    5. The "hook" and "caption" MUST be word-for-word quotes from the transcript at that EXACT start timestamp.
                     
                     Return ONLY a JSON array of objects with these exact keys:
                     [
@@ -284,7 +290,7 @@ if video_url:
                         "start": "MM:SS or HH:MM:SS",
                         "end": "MM:SS or HH:MM:SS",
                         "hook": "Exact quote spoken at start timestamp",
-                        "reason": "Why this podcast moment is high-retention or viral",
+                        "reason": "Why this moment across the full video range is high-retention",
                         "caption": "Subtitles spoken at this exact timestamp"
                       }}
                     ]
