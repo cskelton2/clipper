@@ -1,7 +1,5 @@
-streamlit>=1.30.0
-
-google-generativeai>=0.4.0
-
-yt-dlp>=2024.3.10
-
-youtube-transcript-api>=0.6.2
+streamlit>=1.28.0
+google-generativeai>=0.8.0
+yt-transcript-pro>=2.0.0
+youtube-transcript-api>=1.2.0
+yt-dlp>=2024.1.1
