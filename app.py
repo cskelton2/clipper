@@ -3,7 +3,9 @@ import google.generativeai as genai
 import re
 import json
 import urllib.request
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+import subprocess
+import os
+import tempfile
 
 st.set_page_config(
     page_title="OpusCut AI Studio",
@@ -90,23 +92,82 @@ def fetch_youtube_metadata(yt_id):
     except Exception:
         return ""
 
-def fetch_auto_transcript(yt_id):
-    """Fetches real timed transcripts with enhanced fallback headers"""
+def parse_vtt_timestamps(vtt_content):
+    """Parses raw VTT subtitle text into clean [MM:SS] format"""
+    lines = vtt_content.splitlines()
+    formatted = []
+    seen = set()
+    current_time = ""
+    
+    time_pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2})\.\d{3}\s+-->')
+    
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('WEBVTT') or line.startswith('Kind:') or line.startswith('Language:'):
+            continue
+            
+        match = time_pattern.search(line)
+        if match:
+            hrs, mins, secs = match.groups()
+            total_mins = int(hrs) * 60 + int(mins)
+            current_time = f"{total_mins:02d}:{secs}"
+            continue
+            
+        # Clean VTT tags like <c> or timestamps inside text
+        clean_text = re.sub(r'<[^>]+>', '', line).strip()
+        if clean_text and clean_text not in seen and not clean_text.isdigit():
+            seen.add(clean_text)
+            formatted.append(f"[{current_time}] {clean_text}")
+            
+    return "\n".join(formatted)
+
+def fetch_auto_transcript_ytdlp(url):
+    """Extracts YouTube subtitles reliably using yt-dlp on cloud servers"""
     try:
-        # Try standard YouTube transcript API with language fallbacks
-        api = YouTubeTranscriptApi()
-        transcript_list = api.fetch(yt_id, languages=['en', 'en-US', 'en-GB', 'a.en'])
-        formatted_lines = []
-        for line in transcript_list:
-            start_sec = int(line['start'])
-            minutes = start_sec // 60
-            seconds = start_sec % 60
-            time_str = f"{minutes:02d}:{seconds:02d}"
-            formatted_lines.append(f"[{time_str}] {line['text']}")
-        return "\n".join(formatted_lines)
+        temp_dir = tempfile.gettempdir()
+        out_tmpl = os.path.join(temp_dir, "caption_extract")
+        
+        # Command to dump subtitles using yt-dlp
+        cmd = [
+            "yt-dlp",
+            "--write-auto-sub",
+            "--write-sub",
+            "--sub-lang", "en",
+            "--sub-format", "vtt",
+            "--skip-download",
+            "-o", out_tmpl,
+            url
+        ]
+        
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        
+        # Look for output file
+        expected_vtt = out_tmpl + ".en.vtt"
+        if not os.path.exists(expected_vtt):
+            for file in os.listdir(temp_dir):
+                if file.startswith("caption_extract") and file.endswith(".vtt"):
+                    expected_vtt = os.path.join(temp_dir, file)
+                    break
+                    
+        if os.path.exists(expected_vtt):
+            with open(expected_vtt, "r", encoding="utf-8") as f:
+                vtt_data = f.read()
+            os.remove(expected_vtt)
+            return parse_vtt_timestamps(vtt_data)
     except Exception:
-        # Fallback handling if transcript API is blocked by YouTube Cloud IP rate-limits
-        return None
+        pass
+    return None
+
+def timestamp_to_seconds(ts_str):
+    try:
+        parts = ts_str.strip().split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(ts_str)
+    except Exception:
+        return 0
 
 if video_url:
     yt_id = parse_youtube_id(video_url)
@@ -138,12 +199,15 @@ if video_url:
     with col2:
         st.subheader("📜 TIMED TRANSCRIPT EXTRACTION")
         
-        fetched_transcript = fetch_auto_transcript(yt_id) if yt_id else None
+        fetched_transcript = None
+        if yt_id:
+            with st.spinner("Bypassing cloud blocks & pulling video transcript..."):
+                fetched_transcript = fetch_auto_transcript_ytdlp(video_url)
         
         if fetched_transcript:
             st.success("✅ Real timed transcript auto-detected from YouTube!")
         else:
-            st.warning("⚠️ Could not auto-grab YouTube captions. Paste transcript below to guarantee exact timestamp matching:")
+            st.warning("⚠️ Captions not found or disabled on video. You can paste a transcript below:")
 
         transcript_input = st.text_area(
             "Video Timed Transcript:", 
@@ -221,7 +285,7 @@ if video_url:
             with st.container():
                 st.markdown(f"""
                 <div class="stCard">
-                    <div style="display: flex; justify-space-between; align-items: center;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
                         <h4 style="margin:0; color:#38bdf8;">Clip #{idx+1}: {clip['title']}</h4>
                         <span class="score-badge">🔥 Virality: {clip.get('score', 90)}/100</span>
                     </div>
