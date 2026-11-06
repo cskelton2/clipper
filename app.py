@@ -67,16 +67,16 @@ with st.sidebar:
             
     st.divider()
     aspect_ratio = st.selectbox("Framing / Aspect Ratio", ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"])
-    max_clips = st.slider("Max Clips to Extract", 3, 10, 5)
+    max_clips = st.slider("Max Clips to Extract", 3, 20, 10)
 
 if api_key:
     genai.configure(api_key=api_key)
 
 st.markdown('<p class="main-header">🎬 OpusCut AI Studio</p>', unsafe_allow_html=True)
-st.caption("Auto-fetches timed transcripts to synchronize clip timestamps, text hooks, and subtitles.")
+st.caption("Auto-fetches timed transcripts up to 3 hours for long podcasts and videos to synchronize clips, hooks, and subtitles.")
 st.write("")
 
-video_url = st.text_input("🔗 Paste YouTube Video Link:", placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+video_url = st.text_input("🔗 Paste YouTube Video / Podcast Link:", placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
 def parse_youtube_id(url):
     pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
@@ -93,7 +93,7 @@ def fetch_youtube_metadata(yt_id):
         return ""
 
 def parse_vtt_timestamps(vtt_content):
-    """Parses raw VTT subtitle text into clean [MM:SS] format"""
+    """Parses raw VTT subtitle text into clean [HH:MM:SS] or [MM:SS] format"""
     lines = vtt_content.splitlines()
     formatted = []
     seen = set()
@@ -109,8 +109,11 @@ def parse_vtt_timestamps(vtt_content):
         match = time_pattern.search(line)
         if match:
             hrs, mins, secs = match.groups()
-            total_mins = int(hrs) * 60 + int(mins)
-            current_time = f"{total_mins:02d}:{secs}"
+            hrs_int = int(hrs)
+            if hrs_int > 0:
+                current_time = f"{hrs_int:02d}:{mins}:{secs}"
+            else:
+                current_time = f"{mins}:{secs}"
             continue
             
         # Clean VTT tags like <c> or timestamps inside text
@@ -261,16 +264,16 @@ if video_url:
                     last_error = None
                     
                     prompt = f"""
-                    You are an expert video editor.
-                    VIDEO TITLE: {video_title if video_title else "User Video"}
+                    You are an expert short-form video editor analyzing a long video or podcast episode (up to 3 hours in duration).
+                    VIDEO TITLE: {video_title if video_title else "User Video / Podcast"}
                     
-                    TIMED TRANSCRIPT (Use ONLY these exact timestamps and text):
-                    {transcript_input[:15000] if transcript_input else "Title: " + video_title}
+                    TIMED TRANSCRIPT (Contains exact timestamp markers like [MM:SS] or [HH:MM:SS]):
+                    {transcript_input[:40000] if transcript_input else "Title: " + video_title}
                     
-                    CRITICAL REQUIREMENT:
-                    1. Read the timestamps inside bracket format like [MM:SS] in the transcript above.
-                    2. Choose {max_clips} viral moments from DIFFERENT parts of the video.
-                    3. The "start" and "end" MUST match the exact [MM:SS] timestamps where that specific text is spoken in the transcript.
+                    CRITICAL REQUIREMENT FOR PODCASTS & LONG VIDEOS:
+                    1. Read the exact timestamps formatted as [MM:SS] or [HH:MM:SS] across the ENTIRE transcript.
+                    2. Extract {max_clips} viral moments evenly distributed across the FULL length of the video (beginning, middle hour, and final hour). Do NOT limit selection to early minutes.
+                    3. The "start" and "end" MUST match exact timestamp tags from the transcript where text is spoken.
                     4. The "hook" and "caption" MUST be word-for-word quotes from the transcript at that EXACT start timestamp.
                     
                     Return ONLY a JSON array of objects with these exact keys:
@@ -278,10 +281,10 @@ if video_url:
                       {{
                         "title": "Short Catchy Headline",
                         "score": 95,
-                        "start": "MM:SS",
-                        "end": "MM:SS",
+                        "start": "MM:SS or HH:MM:SS",
+                        "end": "MM:SS or HH:MM:SS",
                         "hook": "Exact quote spoken at start timestamp",
-                        "reason": "Why this specific section of the transcript is viral",
+                        "reason": "Why this podcast moment is high-retention or viral",
                         "caption": "Subtitles spoken at this exact timestamp"
                       }}
                     ]
