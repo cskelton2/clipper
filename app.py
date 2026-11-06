@@ -185,25 +185,46 @@ def download_and_crop_clip(video_url, start_time_str, end_time_str, clip_id):
         
         # Remove if previous file exists
         if os.path.exists(out_filepath):
-            os.remove(out_filepath)
+            try:
+                os.remove(out_filepath)
+            except Exception:
+                pass
             
         start_sec = timestamp_to_seconds(start_time_str)
         end_sec = timestamp_to_seconds(end_time_str)
         
-        # yt-dlp command to cut exact section directly
+        # Ensure start and end are valid numbers
+        if end_sec <= start_sec:
+            end_sec = start_sec + 30
+            
+        # yt-dlp command using ffmpeg for stream clipping
         cmd = [
             "yt-dlp",
-            "-f", "mp4/best",
+            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "--download-sections", f"*{start_sec}-{end_sec}",
             "--force-keyframes-at-cuts",
+            "--no-check-certificates",
             "-o", out_filepath,
             video_url
         ]
         
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
         
         if os.path.exists(out_filepath) and os.path.getsize(out_filepath) > 0:
             return out_filepath
+        else:
+            # Fallback simplified download if keyframes cutting fails
+            fallback_cmd = [
+                "yt-dlp",
+                "-f", "b",
+                "--download-sections", f"*{start_sec}-{end_sec}",
+                "-o", out_filepath,
+                video_url
+            ]
+            subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+            if os.path.exists(out_filepath) and os.path.getsize(out_filepath) > 0:
+                return out_filepath
+            st.error(f"yt-dlp Output: {res.stderr[-300:] if res.stderr else 'No output'}")
     except Exception as e:
         st.error(f"Clipping error: {str(e)}")
     return None
