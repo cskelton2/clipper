@@ -169,6 +169,37 @@ def timestamp_to_seconds(ts_str):
     except Exception:
         return 0
 
+def download_and_crop_clip(video_url, start_time_str, end_time_str, clip_id):
+    """Downloads only the specified timestamp segment of the video directly as an MP4 clip"""
+    try:
+        temp_dir = tempfile.gettempdir()
+        out_filepath = os.path.join(temp_dir, f"clip_{clip_id}.mp4")
+        
+        # Remove if previous file exists
+        if os.path.exists(out_filepath):
+            os.remove(out_filepath)
+            
+        start_sec = timestamp_to_seconds(start_time_str)
+        end_sec = timestamp_to_seconds(end_time_str)
+        
+        # yt-dlp command to cut exact section directly
+        cmd = [
+            "yt-dlp",
+            "-f", "mp4/best",
+            "--download-sections", f"*{start_sec}-{end_sec}",
+            "--force-keyframes-at-cuts",
+            "-o", out_filepath,
+            video_url
+        ]
+        
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+        
+        if os.path.exists(out_filepath) and os.path.getsize(out_filepath) > 0:
+            return out_filepath
+    except Exception as e:
+        st.error(f"Clipping error: {str(e)}")
+    return None
+
 if video_url:
     yt_id = parse_youtube_id(video_url)
     video_title = fetch_youtube_metadata(yt_id) if yt_id else ""
@@ -301,27 +332,41 @@ if video_url:
                 
                 with c1:
                     start_sec = timestamp_to_seconds(clip['start'])
-                    if st.button(f"▶️ Jump & Play ({clip['start']})", key=f"play_{idx}", use_container_width=True):
+                    if st.button(f"▶️ Preview ({clip['start']})", key=f"play_{idx}", use_container_width=True):
                         st.session_state['seek_start'] = start_sec
                         st.rerun()
 
                 with c2:
-                    st.markdown(f'''
-                        <a href="https://cobalt.tools" target="_blank" style="text-decoration:none;">
-                            <button style="width:100%; background-color:#16a34a; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
-                                ⚡ Export Clip Segment ({clip['start']})
-                            </button>
-                        </a>
-                    ''', unsafe_allow_html=True)
+                    if st.button(f"📥 Render & Download MP4", key=f"render_{idx}", type="primary", use_container_width=True):
+                        with st.spinner(f"Cropping clip [{clip['start']} ➔ {clip['end']}]..."):
+                            clip_path = download_and_crop_clip(video_url, clip['start'], clip['end'], f"{yt_id}_{idx}")
+                            if clip_path:
+                                st.session_state[f"ready_clip_{idx}"] = clip_path
+                                st.success("Clip rendered successfully!")
+                            else:
+                                st.error("Failed to extract video clip segment.")
 
                 with c3:
                     st.markdown('''
                         <a href="https://www.capcut.com/editor" target="_blank" style="text-decoration:none;">
                             <button style="width:100%; background-color:#2563eb; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
-                                🎬 Edit in CapCut
+                                🎬 Open CapCut Editor
                             </button>
                         </a>
                     ''', unsafe_allow_html=True)
+
+                # Show direct download button once clip is rendered
+                if f"ready_clip_{idx}" in st.session_state:
+                    rendered_path = st.session_state[f"ready_clip_{idx}"]
+                    if os.path.exists(rendered_path):
+                        with open(rendered_path, "rb") as file_bytes:
+                            st.download_button(
+                                label=f"💾 Click to Save Clip #{idx+1} (.mp4)",
+                                data=file_bytes,
+                                file_name=f"clip_{idx+1}_{clip['start'].replace(':', '-')}.mp4",
+                                mime="video/mp4",
+                                use_container_width=True
+                            )
 
 else:
     st.info("👈 Paste a YouTube link above to begin.")
