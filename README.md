@@ -1,29 +1,32 @@
-# 🎬 OpusCut AI Studio (Streamlit Edition)
+# 🎬 OpusCut AI Studio
 
-A full-stack Python & Streamlit video clipping web app powered by Gemini AI.
+AI-powered YouTube podcast clipper: full-length transcript alignment,
+Gemini-driven viral clip selection, in-app MP4 slicing, and CapCut hand-off.
 
-## 🚀 Quick Setup & Deployment to GitHub / Streamlit Cloud
+## Features
 
-### 1. Push to GitHub
-1. Create a new repository on GitHub named `opuscut-ai`.
-2. Commit and push `app.py` and `requirements.txt`:
-   ```bash
-   git init
-   git add app.py requirements.txt README.md
-   git commit -m "Initial OpusCut AI Streamlit commit"
-   git branch -M main
-   git remote add origin https://github.com/YOUR_USERNAME/opuscut-ai.git
-   git push -u origin main
-   ```
+- **Multi-backend transcript cascade** — works on cloud IPs without a proxy:
+  1. `yt-transcript-pro` (watch-page scrape → yt-dlp player API → legacy API)
+  2. `youtube-transcript-api` via `GenericProxyConfig` (if configured)
+  3. `youtube-transcript-api` direct
+  4. `yt-dlp --impersonate chrome` (TLS fingerprint mimicry)
+- Supports 3+ hour podcasts with exact timestamp alignment
+- Gemini AI clip analysis with virality scoring, hooks, and captions
+- One-click MP4 rendering via `yt-dlp` + `ffmpeg`
+- Jump-to-timestamp preview and CapCut editor link
 
-### 2. Deploy to Streamlit Community Cloud (100% Free Hosting)
-1. Go to [share.streamlit.io](https://share.streamlit.io) and log in with GitHub.
-2. Click **"New app"**.
-3. Select your repository `opuscut-ai`, branch `main`, and main file path `app.py`.
-4. Click **"Deploy!"**. Your app will be live on a custom `.streamlit.app` URL!
+## Quick start
 
-## 🌟 Features
-- Direct web video stream ingestion (YouTube, direct MP4, HLS).
-- Dynamic framing & aspect ratio selector (9:16 Vertical, 1:1 Square, 16:9 Widescreen).
-- Gemini API virality analysis to compute clip scores, hook titles, and karaoke subtitling pre-render tags.
-- Zero local storage footprint.
+```bash
+git clone <your-repo-url>
+cd opuscut-ai-studio
+pip install -r requirements.txt
+# system dependency
+sudo apt install ffmpeg          # Debian / Ubuntu
+# or: brew install ffmpeg         # macOS
+
+mkdir -p .streamlit
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+# add your GEMINI_API_KEY
+
+streamlit run app.py
