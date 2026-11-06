@@ -92,8 +92,38 @@ def fetch_youtube_metadata(yt_id):
     except Exception:
         return ""
 
-def fetch_auto_transcript(yt_id):
-    """Fetches real timed transcripts using youtube-transcript-api with HH:MM:SS / MM:SS formatting"""
+def parse_vtt_subtitles(vtt_path):
+    """Helper to parse VTT subtitle files downloaded via yt-dlp into timestamped text lines"""
+    formatted_lines = []
+    try:
+        with open(vtt_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        time_pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[.,](\d{3})')
+        current_time_str = None
+        
+        for line in lines:
+            line_str = line.strip()
+            match = time_pattern.search(line_str)
+            if match:
+                hours, minutes, seconds = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                total_sec = hours * 3600 + minutes * 60 + seconds
+                if hours > 0:
+                    current_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    current_time_str = f"{minutes:02d}:{seconds:02d}"
+            elif current_time_str and line_str and not '-->' in line_str and not line_str.isdigit():
+                # Clean webvtt tags
+                clean_text = re.sub(r'<[^>]*>', '', line_str)
+                formatted_lines.append(f"[{current_time_str}] {clean_text}")
+                current_time_str = None
+    except Exception:
+        pass
+    return "\n".join(formatted_lines) if formatted_lines else None
+
+def fetch_auto_transcript(yt_id, full_url):
+    """Primary: youtube-transcript-api. Fallback: yt-dlp VTT subtitle extraction for cloud bypass"""
+    # 1. Try python library API
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB'])
         formatted_lines = []
@@ -108,8 +138,36 @@ def fetch_auto_transcript(yt_id):
                 time_str = f"{minutes:02d}:{seconds:02d}"
             formatted_lines.append(f"[{time_str}] {line['text']}")
         return "\n".join(formatted_lines)
-    except Exception as e:
-        return None
+    except Exception:
+        pass
+
+    # 2. Fallback: yt-dlp Subtitle Dump
+    try:
+        vtt_base = f"sub_{yt_id}"
+        cmd = [
+            "yt-dlp",
+            "--extractor-args", "youtube:player_client=ios,web",
+            "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+            "--skip-download",
+            "--write-auto-subs",
+            "--sub-lang", "en",
+            "-o", vtt_base,
+            full_url
+        ]
+        subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Check for generated .vtt files
+        for ext in ['.en.vtt', '.vtt']:
+            target_file = vtt_base + ext
+            if os.path.exists(target_file):
+                parsed = parse_vtt_subtitles(target_file)
+                os.remove(target_file)
+                if parsed:
+                    return parsed
+    except Exception:
+        pass
+
+    return None
 
 def timestamp_to_seconds(ts_str):
     try:
@@ -180,7 +238,7 @@ if video_url:
     with col2:
         st.subheader("📜 FULL-SPAN PODCAST TRANSCRIPT")
         
-        fetched_transcript = fetch_auto_transcript(yt_id) if yt_id else None
+        fetched_transcript = fetch_auto_transcript(yt_id, video_url) if yt_id else None
         
         if fetched_transcript:
             st.success("✅ Real timed transcript auto-detected (Supports up to 3+ hours)!")
@@ -212,7 +270,7 @@ if video_url:
                     VIDEO TITLE: {video_title if video_title else "Podcast Episode"}
                     
                     TIMED TRANSCRIPT (Spanning full length up to 3 hours):
-                    {transcript_input[:80000] if transcript_input else "Title: " + video_title}
+                    {transcript_input if transcript_input else "Title: " + video_title}
                     
                     CRITICAL REQUIREMENTS:
                     1. Read the timestamps inside bracket format like [MM:SS] or [HH:MM:SS] across the ENTIRE duration of the transcript (early, middle, and late hours).
