@@ -3,6 +3,7 @@ import google.generativeai as genai
 import re
 import json
 import urllib.request
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 st.set_page_config(
     page_title="OpusCut AI Studio",
@@ -70,7 +71,7 @@ if api_key:
     genai.configure(api_key=api_key)
 
 st.markdown('<p class="main-header">🎬 OpusCut AI Studio</p>', unsafe_allow_html=True)
-st.caption("Deep-scans the video transcript to extract clips based on actual content.")
+st.caption("Auto-fetches timed transcripts to synchronize clip timestamps, text hooks, and subtitles.")
 st.write("")
 
 video_url = st.text_input("🔗 Paste YouTube Video Link:", placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -81,7 +82,6 @@ def parse_youtube_id(url):
     return match.group(1) if match else None
 
 def fetch_youtube_metadata(yt_id):
-    """Fetches real video title using YouTube oEmbed without requiring YouTube Data API key"""
     try:
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={yt_id}&format=json"
         req = urllib.request.urlopen(oembed_url)
@@ -89,6 +89,21 @@ def fetch_youtube_metadata(yt_id):
         return data.get("title", "")
     except Exception:
         return ""
+
+def fetch_auto_transcript(yt_id):
+    """Fetches real timed transcripts using youtube-transcript-api"""
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB'])
+        formatted_lines = []
+        for line in transcript_list:
+            start_sec = int(line['start'])
+            minutes = start_sec // 60
+            seconds = start_sec % 60
+            time_str = f"{minutes:02d}:{seconds:02d}"
+            formatted_lines.append(f"[{time_str}] {line['text']}")
+        return "\n".join(formatted_lines)
+    except Exception:
+        return None
 
 def timestamp_to_seconds(ts_str):
     try:
@@ -129,15 +144,23 @@ if video_url:
                 st.info("Direct preview unavailable.")
     
     with col2:
-        st.subheader("📜 VIDEO CONTENT & TRANSCRIPT")
+        st.subheader("📜 TIMED TRANSCRIPT EXTRACTION")
         
+        fetched_transcript = fetch_auto_transcript(yt_id) if yt_id else None
+        
+        if fetched_transcript:
+            st.success("✅ Real timed transcript auto-detected from YouTube!")
+        else:
+            st.warning("⚠️ Could not auto-grab YouTube captions. Paste transcript below to guarantee exact timestamp matching:")
+
         transcript_input = st.text_area(
-            "Paste Video Transcript / Summary (REQUIRED for accurate clips):", 
-            placeholder="Paste transcript lines with timestamps or full topic text here (e.g., [02:15] RFK campaign speech in Los Angeles...)\n\nNote: Gemini requires real text context to accurately clip specific video moments.",
+            "Video Timed Transcript:", 
+            value=fetched_transcript if fetched_transcript else "",
+            placeholder="[01:15] Spoken line 1...\n[01:45] Spoken line 2...",
             height=160
         )
         
-        analyze_btn = st.button(f"🔥 Extract Clips From Video Content", type="primary", use_container_width=True)
+        analyze_btn = st.button(f"🔥 Deep-Scan & Align Clips", type="primary", use_container_width=True)
         
         if analyze_btn:
             if not api_key:
@@ -145,34 +168,34 @@ if video_url:
             elif not transcript_input and not video_title:
                 st.warning("Please paste a transcript or context text into the text area above so Gemini can analyze the real video content.")
             else:
-                with st.spinner(f"Analyzing video content for '{video_title if video_title else 'custom video'}'..."):
+                with st.spinner(f"Matching exact timestamps and subtitles..."):
                     models_to_try = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
                     raw_text = None
                     last_error = None
                     
                     prompt = f"""
-                    You are an expert video clipper analyzing a video.
+                    You are an expert video editor.
+                    VIDEO TITLE: {video_title if video_title else "User Video"}
                     
-                    VIDEO TITLE: {video_title if video_title else "User Provided Video"}
-                    VIDEO URL: {video_url}
+                    TIMED TRANSCRIPT (Use ONLY these exact timestamps and text):
+                    {transcript_input[:15000] if transcript_input else "Title: " + video_title}
                     
-                    ACTUAL TRANSCRIPT / CONTENT DATA:
-                    {transcript_input if transcript_input else "Title of video: " + video_title}
-                    
-                    INSTRUCTIONS:
-                    Analyze the ACTUAL transcript/content above. Do NOT make up unrelated topics like cell phones or random generic advice. 
-                    Extract {max_clips} viral clip ideas directly based on what was discussed (e.g., if it is about RFK assassination, focus on RFK assassination moments).
+                    CRITICAL REQUIREMENT:
+                    1. Read the timestamps inside bracket format like [MM:SS] in the transcript above.
+                    2. Choose {max_clips} viral moments from DIFFERENT parts of the video.
+                    3. The "start" and "end" MUST match the exact [MM:SS] timestamps where that specific text is spoken in the transcript.
+                    4. The "hook" and "caption" MUST be word-for-word quotes from the transcript at that EXACT start timestamp.
                     
                     Return ONLY a JSON array of objects with these exact keys:
                     [
                       {{
-                        "title": "Specific Topic Headline from Content",
+                        "title": "Short Catchy Headline",
                         "score": 95,
                         "start": "MM:SS",
                         "end": "MM:SS",
-                        "hook": "Exact quotes or hook relevant to this topic",
-                        "reason": "Why this specific section of the transcript is high retention",
-                        "caption": "Subtitles matching the actual transcript text"
+                        "hook": "Exact quote spoken at start timestamp",
+                        "reason": "Why this specific section of the transcript is viral",
+                        "caption": "Subtitles spoken at this exact timestamp"
                       }}
                     ]
                     """
@@ -206,11 +229,11 @@ if video_url:
             with st.container():
                 st.markdown(f"""
                 <div class="stCard">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; justify-space-between; align-items: center;">
                         <h4 style="margin:0; color:#38bdf8;">Clip #{idx+1}: {clip['title']}</h4>
                         <span class="score-badge">🔥 Virality: {clip.get('score', 90)}/100</span>
                     </div>
-                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>Context:</b> {clip.get('reason', '')}</p>
+                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Exact Video Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>Context:</b> {clip.get('reason', '')}</p>
                     <p style="color:#f472b6;"><b>Viral Hook:</b> "{clip.get('hook', '')}"</p>
                     <div style="background:#0f172a; padding:10px; border-radius:6px; font-family:monospace; color:#facc15;">
                         💬 Subtitles: {clip.get('caption', '')}
