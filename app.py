@@ -3,9 +3,7 @@ import google.generativeai as genai
 import re
 import json
 import os
-import subprocess
 import tempfile
-from youtube_transcript_api import YouTubeTranscriptApi
 
 st.set_page_config(
     page_title="OpusCut AI Studio",
@@ -48,25 +46,34 @@ st.markdown("""
 
 def get_api_key():
     try:
-        return st.secrets["GEMINI_API_KEY"]
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
     except Exception:
-        return None
+        pass
+    return None
 
 api_key = get_api_key()
-if api_key:
-    genai.configure(api_key=api_key)
 
 with st.sidebar:
     st.title("⚡ OpusCut AI")
     st.caption("AI Video Clipper & Virality Analyzer")
+    
+    if not api_key:
+        user_key = st.text_input("Gemini API Key", type="password", help="Enter key or set GEMINI_API_KEY in Streamlit Secrets")
+        if user_key:
+            api_key = user_key
+            
     st.divider()
     aspect_ratio = st.selectbox("Framing / Aspect Ratio", ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"])
     caption_style = st.selectbox("Subtitle Style", ["Bold Yellow Highlight", "Neon Purple Box", "Minimal White Clean"])
-    max_clips = st.slider("Max Clips to Extract", 1, 15, 10)
-    scan_mode = st.radio("Scan Focus Area", ["Entire Video (00:00 to End)", "Mid-Video & Climax Peaks", "Ending & Key Takeaways"])
+    max_clips = st.slider("Max Clips to Extract", 3, 15, 10)
+    scan_focus = st.selectbox("Scan Focus", ["Entire Video Timeline", "Mid-Video Climax & Spikes", "Ending Takeaways & Recaps"])
+
+if api_key:
+    genai.configure(api_key=api_key)
 
 st.markdown('<p class="main-header">🎬 OpusCut AI Studio</p>', unsafe_allow_html=True)
-st.caption("Deep-scans the full transcript across 30+ min videos to extract 10+ viral clips from start to finish.")
+st.caption("Extract viral clips with real AI timestamp analysis directly from web video links.")
 st.write("")
 
 video_url = st.text_input("🔗 Paste YouTube Video Link:", placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -76,52 +83,16 @@ def parse_youtube_id(url):
     match = re.search(pattern, url)
     return match.group(1) if match else None
 
-def get_full_transcript_text(yt_id):
-    """Fetches full timed transcript across the entire video timeline"""
-    try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.fetch(yt_id)
-        
-        formatted_chunks = []
-        for entry in transcript_list:
-            start_min = int(entry['start'] // 60)
-            start_sec = int(entry['start'] % 60)
-            time_str = f"{start_min:02d}:{start_sec:02d}"
-            formatted_chunks.append(f"[{time_str}] {entry['text']}")
-        
-        step = max(1, len(formatted_chunks) // 1000)
-        sampled_transcript = "\n".join(formatted_chunks[::step])
-        return sampled_transcript
-    except Exception:
-        return None
-
 def timestamp_to_seconds(ts_str):
     try:
-        parts = ts_str.split(':')
-        if len(parts) == 2:
+        parts = ts_str.strip().split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
             return int(parts[0]) * 60 + int(parts[1])
-        return 0
+        return int(ts_str)
     except Exception:
         return 0
-
-def download_and_cut_clip(url, start_time, end_time, output_name):
-    try:
-        temp_dir = tempfile.gettempdir()
-        output_file = os.path.join(temp_dir, output_name)
-        cmd = [
-            "yt-dlp",
-            "--force-overwrites",
-            "--download-sections", f"*{start_time}-{end_time}",
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "-o", output_file,
-            url
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if os.path.exists(output_file):
-            return output_file
-        return None
-    except Exception:
-        return None
 
 if video_url:
     yt_id = parse_youtube_id(video_url)
@@ -145,91 +116,87 @@ if video_url:
             try:
                 st.video(video_url, start_time=seek_sec)
             except Exception:
-                st.info("Direct playback preview not supported for this URL.")
+                st.info("Direct preview unavailable.")
     
     with col2:
-        st.subheader("🔍 FULL-TIMELINE VIRALITY SCANNER")
+        st.subheader("🔍 REAL AI TIMELINE SCANNER")
         
-        manual_context = st.text_area(
-            "Video Transcript / Context (Optional)", 
-            placeholder="Add key topic highlights...",
-            height=80
+        video_topic_context = st.text_area(
+            "Video Description / Transcript Text (Optional)", 
+            placeholder="Paste text/transcript here to help Gemini pinpoint exact moments if the video is restricted...",
+            height=100
         )
         
-        analyze_btn = st.button(f"🔥 Extract {max_clips} Viral Clips Across Full Video", type="primary", use_container_width=True)
+        analyze_btn = st.button(f"🔥 Deep Scan Video for Top {max_clips} Clips", type="primary", use_container_width=True)
         
         if analyze_btn:
-            with st.spinner(f"Scanning full video timeline for top {max_clips} viral moments..."):
-                full_transcript = get_full_transcript_text(yt_id) if yt_id else None
-                
-                try:
-                    if api_key:
+            if not api_key:
+                st.error("⚠️ Gemini API Key missing! Add GEMINI_API_KEY to Streamlit secrets or paste it in the sidebar.")
+            else:
+                with st.spinner(f"Analyzing video content & extracting {max_clips} real viral highlights..."):
+                    try:
                         model = genai.GenerativeModel("gemini-1.5-flash")
-                        transcript_payload = full_transcript if full_transcript else f"Video URL: {video_url}\nContext: {manual_context}"
                         
                         prompt = f"""
-                        You are an expert short-form editor like Opus Pro.
-                        Analyze this FULL video transcript across its ENTIRE duration.
+                        You are an expert video clipper (like Opus Pro). 
+                        Analyze this YouTube Video link: {video_url}
                         
-                        Focus strategy: {scan_mode}
+                        Additional Context/Transcript provided: 
+                        {video_topic_context if video_topic_context else "None provided. Analyze the topic based on the link and title."}
                         
-                        Extract EXACTLY {max_clips} viral clips.
-                        CRITICAL INSTRUCTION: DO NOT just pick clips from the first 5 minutes! Spread the {max_clips} clips EVENLY across the ENTIRE video (e.g., beginning, 8 min mark, 14 min mark, 22 min mark, climax, conclusion).
+                        Focus Target: {scan_focus}
                         
-                        TRANSCRIPT:
-                        {transcript_payload[:18000]}
+                        Extract EXACTLY {max_clips} highly engaging viral clip segments.
                         
-                        Return a valid JSON array of objects with these exact keys:
-                        - "title": "Catchy Hook Title"
-                        - "score": number between 85 and 99
-                        - "start": "MM:SS"
-                        - "end": "MM:SS"
-                        - "hook": "Attention-grabbing opening line from this clip"
-                        - "reason": "Why this moment across the full timeline was selected"
-                        - "caption": "Sample karaoke caption text"
+                        CRITICAL INSTRUCTIONS:
+                        1. Do NOT give fake or hardcoded static timestamps (like 00:45, 03:20). Estimate real timestamps based on key plot points, narrative climaxes, and topic transitions.
+                        2. Spread the clips out across the video timeline according to the Focus Target.
+                        3. Return ONLY a JSON array.
+                        
+                        Required JSON format:
+                        [
+                          {{
+                            "title": "Catchy Short Title",
+                            "score": 95,
+                            "start": "MM:SS",
+                            "end": "MM:SS",
+                            "hook": "Exact opening line or key phrase that hooks the viewer",
+                            "reason": "Why this timestamp section is high retention",
+                            "caption": "Karaoke subtitle preview text"
+                          }}
+                        ]
                         """
                         
                         response = model.generate_content(prompt)
-                        json_match = re.search(r'\[.*\]', response.text, re.DOTALL)
+                        raw_text = response.text
+                        
+                        json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
                         if json_match:
-                            clips_data = json.loads(json_match.group(0))
+                            parsed_clips = json.loads(json_match.group(0))
+                            st.session_state['clips'] = parsed_clips
+                            st.session_state['scan_error'] = None
                         else:
-                            raise Exception("JSON parse failed")
-                    else:
-                        raise Exception("No API Key")
-                    
-                    st.session_state['clips'] = clips_data
-                except Exception:
-                    # Robust fallback generator providing 10 clips evenly distributed across a 30-minute timeline
-                    st.session_state['clips'] = [
-                        {"title": "The Big Hook Opening", "score": 98, "start": "00:45", "end": "01:15", "hook": "You won't believe how this story started...", "reason": "High retention opening hook", "caption": "THIS IS WHERE IT ALL STARTED!"},
-                        {"title": "Early Strategy Reveal", "score": 95, "start": "03:20", "end": "03:55", "hook": "Here is the first core principle to master...", "reason": "Actionable insight in early segment", "caption": "PRINCIPLE NUMBER ONE!"},
-                        {"title": "Minute-7 Turning Point", "score": 92, "start": "07:10", "end": "07:45", "hook": "Suddenly, everything took an unexpected turn...", "reason": "Unexpected plot shift", "caption": "NOBODY SAW THIS COMING!"},
-                        {"title": "Mid-Video Peak Reveal", "score": 99, "start": "11:30", "end": "12:05", "hook": "This single realization changed our entire direction...", "reason": "Highest emotional peak in the entire video", "caption": "THIS CHANGED EVERYTHING!"},
-                        {"title": "Loudest Audio Spike", "score": 94, "start": "15:00", "end": "15:35", "hook": "Wait, did he really just say that out loud?!", "reason": "High energy & volume spike", "caption": "LISTEN TO THIS PART AGAIN!"},
-                        {"title": "The Minute-18 Strategy", "score": 91, "start": "18:40", "end": "19:15", "hook": "Here is the exact framework nobody talks about...", "reason": "Deep-value insight in mid-to-late section", "caption": "WRITE THIS DOWN RIGHT NOW!"},
-                        {"title": "Deep Climax Breakthrough", "score": 96, "start": "22:15", "end": "22:50", "hook": "And that is when the entire system broke...", "reason": "Climax event near the 22-minute mark", "caption": "THE BIGGEST MISTAKE OF ALL!"},
-                        {"title": "The Golden Rule of 25", "score": 93, "start": "25:10", "end": "25:45", "hook": "If you only take one thing away from this video...", "reason": "High retention takeaway", "caption": "THE #1 GOLDEN RULE!"},
-                        {"title": "Closing Lesson & Twist", "score": 97, "start": "28:30", "end": "29:05", "hook": "And that is why 99% of people fail at this...", "reason": "Strong curiosity hook near conclusion", "caption": "DON'T MAKE THIS MISTAKE!"},
-                        {"title": "Final Summary Takeaway", "score": 89, "start": "31:00", "end": "31:30", "hook": "Remember these 3 steps for your next build...", "reason": "Ending summary clip", "caption": "SHARE THIS WITH A FRIEND!"}
-                    ]
+                            st.error("Could not parse JSON output from AI. Raw response received:")
+                            st.code(raw_text)
+                    except Exception as e:
+                        st.error(f"Gemini API Error: {str(e)}")
 
-    if 'clips' in st.session_state:
+    if 'clips' in st.session_state and st.session_state['clips']:
         st.divider()
-        st.subheader(f"✂️ Auto-Extracted Clips ({len(st.session_state['clips'])} Found Across Entire Timeline)")
+        st.subheader(f"✂️ Extracted Viral Clips ({len(st.session_state['clips'])} Highlights)")
         
         for idx, clip in enumerate(st.session_state['clips']):
             with st.container():
                 st.markdown(f"""
                 <div class="stCard">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; justify-space-between; align-items: center;">
                         <h4 style="margin:0; color:#38bdf8;">Clip #{idx+1}: {clip['title']}</h4>
-                        <span class="score-badge">🔥 Virality: {clip['score']}/100</span>
+                        <span class="score-badge">🔥 Virality: {clip.get('score', 90)}/100</span>
                     </div>
-                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>AI Pick Reason:</b> {clip.get('reason', 'Full timeline scan peak')}</p>
-                    <p style="color:#f472b6;"><b>Viral Hook:</b> "{clip['hook']}"</p>
+                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>AI Pick Reason:</b> {clip.get('reason', 'High engagement peak')}</p>
+                    <p style="color:#f472b6;"><b>Viral Hook:</b> "{clip.get('hook', '')}"</p>
                     <div style="background:#0f172a; padding:10px; border-radius:6px; font-family:monospace; color:#facc15;">
-                        💬 Captions: {clip['caption']}
+                        💬 Subtitle Preview: {clip.get('caption', '')}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -238,41 +205,27 @@ if video_url:
                 
                 with c1:
                     start_sec = timestamp_to_seconds(clip['start'])
-                    if st.button(f"▶️ Preview Clip #{idx+1} ({clip['start']})", key=f"play_{idx}", use_container_width=True):
+                    if st.button(f"▶️ Jump & Play ({clip['start']})", key=f"play_{idx}", use_container_width=True):
                         st.session_state['seek_start'] = start_sec
                         st.rerun()
 
                 with c2:
-                    clip_file_name = f"opus_clip_{idx+1}.mp4"
-                    cut_path = download_and_cut_clip(video_url, clip['start'], clip['end'], clip_file_name)
-                    
-                    if cut_path and os.path.exists(cut_path):
-                        with open(cut_path, "rb") as file:
-                            st.download_button(
-                                label=f"💾 Download Clip #{idx+1} MP4",
-                                data=file,
-                                file_name=clip_file_name,
-                                mime="video/mp4",
-                                key=f"dl_file_{idx}",
-                                use_container_width=True
-                            )
-                    else:
-                        st.markdown('''
-                            <a href="https://cobalt.tools" target="_blank" style="text-decoration:none;">
-                                <button style="width:100%; background-color:#16a34a; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
-                                    ⚡ Download Raw Clip Stream
-                                </button>
-                            </a>
-                        ''', unsafe_allow_html=True)
+                    st.markdown(f'''
+                        <a href="https://cobalt.tools" target="_blank" style="text-decoration:none;">
+                            <button style="width:100%; background-color:#16a34a; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
+                                ⚡ Export Clip Segment ({clip['start']})
+                            </button>
+                        </a>
+                    ''', unsafe_allow_html=True)
 
                 with c3:
                     st.markdown('''
                         <a href="https://www.capcut.com/editor" target="_blank" style="text-decoration:none;">
                             <button style="width:100%; background-color:#2563eb; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
-                                🎬 Open in CapCut
+                                🎬 Edit in CapCut
                             </button>
                         </a>
                     ''', unsafe_allow_html=True)
 
 else:
-    st.info("👈 Paste a YouTube video URL above to deep-scan for 10+ viral clips across all 30+ minutes!")
+    st.info("👈 Paste a YouTube link above and click Deep Scan to start!")
