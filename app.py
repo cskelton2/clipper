@@ -2,8 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import re
 import json
-import os
-import tempfile
+import urllib.request
 
 st.set_page_config(
     page_title="OpusCut AI Studio",
@@ -56,7 +55,7 @@ api_key = get_api_key()
 
 with st.sidebar:
     st.title("⚡ OpusCut AI")
-    st.caption("AI Video Clipper & Virality Analyzer")
+    st.caption("Real AI Video Clipper & Transcript Analyzer")
     
     if not api_key:
         user_key = st.text_input("Gemini API Key", type="password", help="Enter key or set GEMINI_API_KEY in Streamlit Secrets")
@@ -65,15 +64,13 @@ with st.sidebar:
             
     st.divider()
     aspect_ratio = st.selectbox("Framing / Aspect Ratio", ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"])
-    caption_style = st.selectbox("Subtitle Style", ["Bold Yellow Highlight", "Neon Purple Box", "Minimal White Clean"])
-    max_clips = st.slider("Max Clips to Extract", 3, 15, 10)
-    scan_focus = st.selectbox("Scan Focus", ["Entire Video Timeline", "Mid-Video Climax & Spikes", "Ending Takeaways & Recaps"])
+    max_clips = st.slider("Max Clips to Extract", 3, 10, 5)
 
 if api_key:
     genai.configure(api_key=api_key)
 
 st.markdown('<p class="main-header">🎬 OpusCut AI Studio</p>', unsafe_allow_html=True)
-st.caption("Extract viral clips with real AI timestamp analysis directly from web video links.")
+st.caption("Deep-scans the video transcript to extract clips based on actual content.")
 st.write("")
 
 video_url = st.text_input("🔗 Paste YouTube Video Link:", placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -82,6 +79,16 @@ def parse_youtube_id(url):
     pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
     match = re.search(pattern, url)
     return match.group(1) if match else None
+
+def fetch_youtube_metadata(yt_id):
+    """Fetches real video title using YouTube oEmbed without requiring YouTube Data API key"""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={yt_id}&format=json"
+        req = urllib.request.urlopen(oembed_url)
+        data = json.loads(req.read().decode())
+        return data.get("title", "")
+    except Exception:
+        return ""
 
 def timestamp_to_seconds(ts_str):
     try:
@@ -96,6 +103,7 @@ def timestamp_to_seconds(ts_str):
 
 if video_url:
     yt_id = parse_youtube_id(video_url)
+    video_title = fetch_youtube_metadata(yt_id) if yt_id else ""
     
     if 'seek_start' not in st.session_state:
         st.session_state['seek_start'] = 0
@@ -104,8 +112,10 @@ if video_url:
     
     with col1:
         st.subheader("📹 Video Stream Preview")
-        seek_sec = st.session_state.get('seek_start', 0)
+        if video_title:
+            st.caption(f"📌 **Detected Video Title:** {video_title}")
         
+        seek_sec = st.session_state.get('seek_start', 0)
         if yt_id:
             embed_url = f"https://www.youtube.com/embed/{yt_id}?start={seek_sec}&autoplay=1"
             st.markdown(
@@ -119,52 +129,50 @@ if video_url:
                 st.info("Direct preview unavailable.")
     
     with col2:
-        st.subheader("🔍 REAL AI TIMELINE SCANNER")
+        st.subheader("📜 VIDEO CONTENT & TRANSCRIPT")
         
-        video_topic_context = st.text_area(
-            "Video Description / Transcript Text (Optional)", 
-            placeholder="Paste text/transcript here to help Gemini pinpoint exact moments if the video is restricted...",
-            height=100
+        transcript_input = st.text_area(
+            "Paste Video Transcript / Summary (REQUIRED for accurate clips):", 
+            placeholder="Paste transcript lines with timestamps or full topic text here (e.g., [02:15] RFK campaign speech in Los Angeles...)\n\nNote: Gemini requires real text context to accurately clip specific video moments.",
+            height=160
         )
         
-        analyze_btn = st.button(f"🔥 Deep Scan Video for Top {max_clips} Clips", type="primary", use_container_width=True)
+        analyze_btn = st.button(f"🔥 Extract Clips From Video Content", type="primary", use_container_width=True)
         
         if analyze_btn:
             if not api_key:
                 st.error("⚠️ Gemini API Key missing! Add GEMINI_API_KEY to Streamlit secrets or paste it in the sidebar.")
+            elif not transcript_input and not video_title:
+                st.warning("Please paste a transcript or context text into the text area above so Gemini can analyze the real video content.")
             else:
-                with st.spinner(f"Analyzing video content & extracting {max_clips} real viral highlights..."):
-                    # Dynamic model fallback handler to guarantee compatibility
+                with st.spinner(f"Analyzing video content for '{video_title if video_title else 'custom video'}'..."):
                     models_to_try = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
                     raw_text = None
                     last_error = None
                     
                     prompt = f"""
-                    You are an expert video clipper (like Opus Pro). 
-                    Analyze this YouTube Video link: {video_url}
+                    You are an expert video clipper analyzing a video.
                     
-                    Additional Context/Transcript provided: 
-                    {video_topic_context if video_topic_context else "None provided. Analyze the topic based on the link and title."}
+                    VIDEO TITLE: {video_title if video_title else "User Provided Video"}
+                    VIDEO URL: {video_url}
                     
-                    Focus Target: {scan_focus}
+                    ACTUAL TRANSCRIPT / CONTENT DATA:
+                    {transcript_input if transcript_input else "Title of video: " + video_title}
                     
-                    Extract EXACTLY {max_clips} highly engaging viral clip segments.
+                    INSTRUCTIONS:
+                    Analyze the ACTUAL transcript/content above. Do NOT make up unrelated topics like cell phones or random generic advice. 
+                    Extract {max_clips} viral clip ideas directly based on what was discussed (e.g., if it is about RFK assassination, focus on RFK assassination moments).
                     
-                    CRITICAL INSTRUCTIONS:
-                    1. Do NOT give fake or hardcoded static timestamps. Estimate real timestamps based on key plot points, narrative climaxes, and topic transitions across the whole video.
-                    2. Spread the clips out across the video timeline according to the Focus Target.
-                    3. Return ONLY a valid JSON array.
-                    
-                    Required JSON format:
+                    Return ONLY a JSON array of objects with these exact keys:
                     [
                       {{
-                        "title": "Catchy Short Title",
+                        "title": "Specific Topic Headline from Content",
                         "score": 95,
                         "start": "MM:SS",
                         "end": "MM:SS",
-                        "hook": "Exact opening line or key phrase that hooks the viewer",
-                        "reason": "Why this timestamp section is high retention",
-                        "caption": "Karaoke subtitle preview text"
+                        "hook": "Exact quotes or hook relevant to this topic",
+                        "reason": "Why this specific section of the transcript is high retention",
+                        "caption": "Subtitles matching the actual transcript text"
                       }}
                     ]
                     """
@@ -184,29 +192,28 @@ if video_url:
                         if json_match:
                             parsed_clips = json.loads(json_match.group(0))
                             st.session_state['clips'] = parsed_clips
-                            st.session_state['scan_error'] = None
                         else:
-                            st.error("Could not parse JSON output from AI. Raw response received:")
+                            st.error("Could not parse JSON response from AI:")
                             st.code(raw_text)
                     else:
                         st.error(f"Gemini API Error: {str(last_error)}")
 
     if 'clips' in st.session_state and st.session_state['clips']:
         st.divider()
-        st.subheader(f"✂️ Extracted Viral Clips ({len(st.session_state['clips'])} Highlights)")
+        st.subheader(f"✂️ Extracted Clips for: {video_title if video_title else 'Your Video'}")
         
         for idx, clip in enumerate(st.session_state['clips']):
             with st.container():
                 st.markdown(f"""
                 <div class="stCard">
-                    <div style="display: flex; justify-space-between; align-items: center;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
                         <h4 style="margin:0; color:#38bdf8;">Clip #{idx+1}: {clip['title']}</h4>
                         <span class="score-badge">🔥 Virality: {clip.get('score', 90)}/100</span>
                     </div>
-                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>AI Pick Reason:</b> {clip.get('reason', 'High engagement peak')}</p>
+                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>Context:</b> {clip.get('reason', '')}</p>
                     <p style="color:#f472b6;"><b>Viral Hook:</b> "{clip.get('hook', '')}"</p>
                     <div style="background:#0f172a; padding:10px; border-radius:6px; font-family:monospace; color:#facc15;">
-                        💬 Subtitle Preview: {clip.get('caption', '')}
+                        💬 Subtitles: {clip.get('caption', '')}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -238,4 +245,4 @@ if video_url:
                     ''', unsafe_allow_html=True)
 
 else:
-    st.info("👈 Paste a YouTube link above and click Deep Scan to start!")
+    st.info("👈 Paste a YouTube link above to begin.")
