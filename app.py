@@ -5,21 +5,23 @@ import json
 import urllib.request
 import os
 import subprocess
+from urllib.parse import quote
+
 from youtube_transcript_api import (
     YouTubeTranscriptApi,
     TranscriptsDisabled,
     NoTranscriptFound,
-    RequestBlocked,
-    IpBlocked,
 )
 
-# ---------- 可选代理配置（从 Streamlit Secrets 读取） ----------
 try:
-    from youtube_transcript_api.proxies import WebshareProxyConfig
+    from youtube_transcript_api.proxies import GenericProxyConfig
     HAS_PROXY_SUPPORT = True
 except ImportError:
     HAS_PROXY_SUPPORT = False
 
+# ----------------------------------------------------------------------------
+# 页面配置 & 样式
+# ----------------------------------------------------------------------------
 st.set_page_config(
     page_title="OpusCut AI Studio",
     page_icon="🎬",
@@ -50,38 +52,61 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def get_api_key():
+# ----------------------------------------------------------------------------
+# Secrets 安全读取
+# ----------------------------------------------------------------------------
+def _secret(key, default=None):
+    """安全地从 Streamlit Secrets 读取，不抛异常。"""
     try:
-        if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
+        if key in st.secrets:
+            return st.secrets[key]
     except Exception:
         pass
-    return None
+    return default
 
 
-def build_transcript_api():
-    """构建 YouTubeTranscriptApi 实例，支持 Webshare 代理（如果 secrets 中配置了）"""
-    if not HAS_PROXY_SUPPORT:
-        return YouTubeTranscriptApi()
+def get_api_key():
+    return _secret("GEMINI_API_KEY")
 
-    try:
-        username = st.secrets.get("WEBSHARE_USERNAME")
-        password = st.secrets.get("WEBSHARE_PASSWORD")
-        if username and password:
+
+def has_proxy_config():
+    return bool(_secret("WEBSHARE_USERNAME") and _secret("WEBSHARE_PASSWORD"))
+
+
+# ----------------------------------------------------------------------------
+# 字幕抓取核心
+# ----------------------------------------------------------------------------
+def build_transcript_api(use_proxy=True):
+    """
+    构建 YouTubeTranscriptApi 实例。
+    - 使用 GenericProxyConfig 手动构造代理 URL，绕过 WebshareProxyConfig
+      的 407 认证封装问题。
+    - 支持 secrets 中显式指定 WEBSHARE_HOST / WEBSHARE_PORT。
+    """
+    if use_proxy and HAS_PROXY_SUPPORT and has_proxy_config():
+        try:
+            username = str(_secret("WEBSHARE_USERNAME"))
+            password = str(_secret("WEBSHARE_PASSWORD"))
+            host = str(_secret("WEBSHARE_HOST", "p.webshare.io"))
+            port = str(_secret("WEBSHARE_PORT", "80"))
+
+            proxy_url = (
+                f"http://{quote(username, safe='')}:"
+                f"{quote(password, safe='')}@{host}:{port}"
+            )
             return YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=username,
-                    proxy_password=password,
+                proxy_config=GenericProxyConfig(
+                    http_url=proxy_url, https_url=proxy_url
                 )
             )
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return YouTubeTranscriptApi()
 
 
 def _format_seconds_to_timestamp(seconds):
-    """将秒数转为 [MM:SS] 或 [HH:MM:SS]"""
+    """秒数 → [MM:SS] 或 [HH:MM:SS]"""
     seconds = int(seconds)
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
@@ -91,55 +116,94 @@ def _format_seconds_to_timestamp(seconds):
     return f"{minutes:02d}:{secs:02d}"
 
 
+def _extract_lines_from_fetched(fetched):
+    """兼容 FetchedTranscript 对象与旧 dict 结果，统一转成 [时间] 文本 行。"""
+    lines = []
+    for snippet in fetched:
+        start = getattr(snippet, "start", None)
+        text = getattr(snippet, "text", None)
+        if start is None or text is None:
+            try:
+                start = snippet["start"]
+                text = snippet["text"]
+            except Exception:
+                continue
+        lines.append(f"[{_format_seconds_to_timestamp(start)}] {text}")
+    return lines
+
+
 def fetch_auto_transcript(yt_id, full_url):
     """
-    稳健的字幕抓取流程：
-    1. 新版 youtube-transcript-api（支持代理）
-    2. yt-dlp 后备（优先人工字幕，其次自动字幕；支持 cookies）
+    三级抓取链路：
+    1) 代理 + youtube-transcript-api
+    2) 直连 + youtube-transcript-api
+    3) yt-dlp（人工字幕优先，自动字幕兜底）
     """
-    api = build_transcript_api()
+    errors = []
+    languages = ["en", "en-US", "en-GB"]
 
-    # ---------- 1. 新版 youtube-transcript-api ----------
+    # ---------- 策略 1：代理 + API ----------
+    if (
+        has_proxy_config()
+        and HAS_PROXY_SUPPORT
+        and not st.session_state.get("proxy_failed", False)
+    ):
+        try:
+            api = build_transcript_api(use_proxy=True)
+            fetched = api.fetch(yt_id, languages=languages)
+            lines = _extract_lines_from_fetched(fetched)
+            if lines:
+                return "\n".join(lines)
+        except (TranscriptsDisabled, NoTranscriptFound):
+            return None
+        except Exception as e:
+            errors.append(f"代理 API: {e}")
+            err_str = str(e).lower()
+            if (
+                "407" in str(e)
+                or "proxy" in err_str
+                or "tunnel" in err_str
+                or "authentication" in err_str
+            ):
+                # 会话熔断：本次运行不再尝试代理，避免反复超时
+                st.session_state["proxy_failed"] = True
+
+    # ---------- 策略 2：直连 + API ----------
     try:
-        # v1.2.x 推荐写法：fetch() 返回 FetchedTranscript 对象
-        fetched = api.fetch(yt_id, languages=["en", "en-US", "en-GB"])
-
-        # FetchedTranscript 支持直接迭代出 snippet 对象（.start, .text）
-        formatted_lines = []
-        for snippet in fetched:
-            time_str = _format_seconds_to_timestamp(snippet.start)
-            formatted_lines.append(f"[{time_str}] {snippet.text}")
-
-        if formatted_lines:
-            return "\n".join(formatted_lines)
-
+        api = build_transcript_api(use_proxy=False)
+        fetched = api.fetch(yt_id, languages=languages)
+        lines = _extract_lines_from_fetched(fetched)
+        if lines:
+            return "\n".join(lines)
     except (TranscriptsDisabled, NoTranscriptFound):
-        # 确实没有字幕，不需要再浪费 yt-dlp 时间
         return None
-    except (RequestBlocked, IpBlocked) as e:
-        # IP 被封锁：记录日志，继续走 yt-dlp 后备
-        st.session_state["transcript_block_reason"] = str(e)
     except Exception as e:
-        st.session_state["transcript_block_reason"] = str(e)
+        errors.append(f"直连 API: {e}")
 
-    # ---------- 2. yt-dlp 后备 ----------
-    return _fetch_transcript_via_ytdlp(yt_id, full_url)
+    # ---------- 策略 3：yt-dlp 后备 ----------
+    ytdlp_result = _fetch_transcript_via_ytdlp(yt_id, full_url)
+    if ytdlp_result:
+        return ytdlp_result
+
+    if errors:
+        st.session_state["transcript_block_reason"] = " | ".join(errors)
+    return None
 
 
 def _fetch_transcript_via_ytdlp(yt_id, full_url):
-    """使用 yt-dlp 下载 VTT 字幕文件并解析。支持 cookies 与备用客户端。"""
+    """yt-dlp 抓取 VTT 字幕；支持 cookies，优先人工字幕。"""
     vtt_base = f"sub_{yt_id}"
     cookies_file = None
 
-    # 如果 secrets 中配置了 cookies 文本，写入临时文件
+    # 可选：从 secrets 写 cookies 文件
     try:
-        cookies_text = st.secrets.get("YOUTUBE_COOKIES")
+        cookies_text = _secret("YOUTUBE_COOKIES")
         if cookies_text:
             cookies_file = f"cookies_{yt_id}.txt"
             with open(cookies_file, "w", encoding="utf-8") as f:
                 f.write(cookies_text)
     except Exception:
-        pass
+        cookies_file = None
 
     try:
         cmd = [
@@ -150,38 +214,41 @@ def _fetch_transcript_via_ytdlp(yt_id, full_url):
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 "
             "Mobile/15E148 Safari/604.1",
             "--skip-download",
-            "--write-subs",        # 优先人工字幕
-            "--write-auto-subs",   # 没有人工时下载自动字幕
+            "--write-subs",
+            "--write-auto-subs",
             "--sub-langs", "en,en-US,en-GB",
             "--sub-format", "vtt",
             "-o", vtt_base,
             full_url,
         ]
-
         if cookies_file:
             cmd.extend(["--cookies", cookies_file])
 
-        subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
-        # 查找生成的 .vtt 文件（yt-dlp 可能生成 .en.vtt / .en-US.vtt 等）
         for filename in os.listdir("."):
             if filename.startswith(vtt_base) and filename.endswith(".vtt"):
                 parsed = parse_vtt_subtitles(filename)
-                os.remove(filename)
+                try:
+                    os.remove(filename)
+                except Exception:
+                    pass
                 if parsed:
                     return parsed
-
     except Exception:
         pass
     finally:
         if cookies_file and os.path.exists(cookies_file):
-            os.remove(cookies_file)
+            try:
+                os.remove(cookies_file)
+            except Exception:
+                pass
 
     return None
 
 
 def parse_vtt_subtitles(vtt_path):
-    """解析 VTT 字幕文件为 [时间戳] 文本 格式"""
+    """VTT → [时间戳] 文本 行。"""
     formatted_lines = []
     try:
         with open(vtt_path, "r", encoding="utf-8") as f:
@@ -197,11 +264,9 @@ def parse_vtt_subtitles(vtt_path):
             line_str = line.strip()
             match = time_pattern.search(line_str)
             if match:
-                hours, minutes, seconds = (
-                    int(match.group(1)),
-                    int(match.group(2)),
-                    int(match.group(3)),
-                )
+                hours = int(match.group(1))
+                minutes = int(match.group(2))
+                seconds = int(match.group(3))
                 if hours > 0:
                     current_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
                 else:
@@ -211,6 +276,7 @@ def parse_vtt_subtitles(vtt_path):
                 and line_str
                 and "-->" not in line_str
                 and not line_str.isdigit()
+                and not line_str.upper().startswith("WEBVTT")
             ):
                 clean_text = re.sub(r"<[^>]*>", "", line_str)
                 formatted_lines.append(f"[{current_time_str}] {clean_text}")
@@ -221,7 +287,9 @@ def parse_vtt_subtitles(vtt_path):
     return "\n".join(formatted_lines) if formatted_lines else None
 
 
-# ---------- 以下为原有工具函数，未做改动 ----------
+# ----------------------------------------------------------------------------
+# 其他工具函数（保持不变）
+# ----------------------------------------------------------------------------
 def parse_youtube_id(url):
     pattern = r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})"
     match = re.search(pattern, url)
@@ -234,7 +302,7 @@ def fetch_youtube_metadata(yt_id):
             f"https://www.youtube.com/oembed?"
             f"url=https://www.youtube.com/watch?v={yt_id}&format=json"
         )
-        req = urllib.request.urlopen(oembed_url)
+        req = urllib.request.urlopen(oembed_url, timeout=10)
         data = json.loads(req.read().decode())
         return data.get("title", "")
     except Exception:
@@ -283,7 +351,9 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         return False, str(e)
 
 
-# ---------- 以下为原有 UI 逻辑（仅字幕状态提示略有调整） ----------
+# ----------------------------------------------------------------------------
+# 侧边栏 & 主界面
+# ----------------------------------------------------------------------------
 api_key = get_api_key()
 
 with st.sidebar:
@@ -300,9 +370,26 @@ with st.sidebar:
             api_key = user_key
 
     st.divider()
+
+    # 代理状态显示
+    if has_proxy_config():
+        if st.session_state.get("proxy_failed"):
+            st.error("🚫 代理连接失败（407）。本次会话已跳过代理。")
+            if st.button("🔄 重置代理状态", use_container_width=True):
+                st.session_state["proxy_failed"] = False
+                st.rerun()
+        else:
+            st.success("🌐 Webshare 代理已配置")
+    else:
+        st.info("ℹ️ 未配置代理（仅直连 + yt-dlp 后备）")
+
     aspect_ratio = st.selectbox(
         "Framing / Aspect Ratio",
-        ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"],
+        [
+            "9:16 Vertical (TikTok/Reels)",
+            "1:1 Square (Instagram)",
+            "16:9 Widescreen (YouTube)",
+        ],
     )
     max_clips = st.slider("Max Clips to Extract", 3, 20, 8)
 
@@ -310,7 +397,10 @@ if api_key:
     genai.configure(api_key=api_key)
 
 st.markdown('<p class="main-header">🎬 OpusCut AI Studio</p>', unsafe_allow_html=True)
-st.caption("Supports full-length podcasts up to 3+ hours with exact timed transcript alignment and in-app MP4 clipping.")
+st.caption(
+    "Supports full-length podcasts up to 3+ hours with exact timed "
+    "transcript alignment and in-app MP4 clipping."
+)
 st.write("")
 
 video_url = st.text_input(
@@ -334,7 +424,10 @@ if video_url:
 
         seek_sec = st.session_state.get("seek_start", 0)
         if yt_id:
-            embed_url = f"https://www.youtube.com/embed/{yt_id}?start={seek_sec}&autoplay=1"
+            embed_url = (
+                f"https://www.youtube.com/embed/{yt_id}"
+                f"?start={seek_sec}&autoplay=1"
+            )
             st.markdown(
                 f'<iframe width="100%" height="380" src="{embed_url}" '
                 f'frameborder="0" allow="accelerometer; autoplay; clipboard-write; '
@@ -351,18 +444,25 @@ if video_url:
     with col2:
         st.subheader("📜 FULL-SPAN PODCAST TRANSCRIPT")
 
-        fetched_transcript = fetch_auto_transcript(yt_id, video_url) if yt_id else None
+        fetched_transcript = (
+            fetch_auto_transcript(yt_id, video_url) if yt_id else None
+        )
 
         if fetched_transcript:
-            st.success("✅ Real timed transcript auto-detected (Supports up to 3+ hours)!")
+            st.success(
+                "✅ Real timed transcript auto-detected (Supports up to 3+ hours)!"
+            )
         else:
             block_reason = st.session_state.pop("transcript_block_reason", None)
             if block_reason:
                 st.warning(
-                    "⚠️ YouTube 拒绝了字幕请求（云端 IP 被屏蔽）。"
-                    "已尝试 yt-dlp 后备；如果仍然失败，请粘贴字幕或配置代理/cookies。\n\n"
-                    f"<small>原因：{block_reason}</small>",
-                    icon="🚫",
+                    "⚠️ 无法自动抓取字幕。已尝试代理 API → 直连 API → yt-dlp 后备。\n\n"
+                    "**请检查：**\n"
+                    "- Webshare 用户名/密码是否正确（Secrets 中的 `WEBSHARE_USERNAME` / `WEBSHARE_PASSWORD`）\n"
+                    "- 若 407 持续出现，请尝试配置 `WEBSHARE_HOST` / `WEBSHARE_PORT`\n"
+                    "- 或在 Secrets 中配置 `YOUTUBE_COOKIES` 让 yt-dlp 绕过机器人检测\n"
+                    "- 或直接在下方粘贴字幕文本\n\n"
+                    f"<small>原因：{block_reason}</small>"
                 )
             else:
                 st.warning(
@@ -386,13 +486,15 @@ if video_url:
         if analyze_btn:
             if not api_key:
                 st.error(
-                    "⚠️ Gemini API Key missing! Add GEMINI_API_KEY to Streamlit secrets "
-                    "or paste it in the sidebar."
+                    "⚠️ Gemini API Key missing! Add GEMINI_API_KEY to Streamlit "
+                    "secrets or paste it in the sidebar."
                 )
             elif not transcript_input and not video_title:
                 st.warning("Please provide transcript text or a video title.")
             else:
-                with st.spinner("Analyzing multi-hour podcast timeline across full duration..."):
+                with st.spinner(
+                    "Analyzing multi-hour podcast timeline across full duration..."
+                ):
                     models_to_try = [
                         "gemini-2.5-flash",
                         "gemini-3-flash-preview",
@@ -498,7 +600,9 @@ if video_url:
                         if e_sec <= s_sec:
                             e_sec = s_sec + 30
 
-                        with st.spinner(f"Slicing clip from {clip['start']} to {clip['end']}..."):
+                        with st.spinner(
+                            f"Slicing clip from {clip['start']} to {clip['end']}..."
+                        ):
                             success, res = download_and_crop_clip(
                                 video_url, s_sec, e_sec, f"clip_{idx}.mp4"
                             )
@@ -508,16 +612,21 @@ if video_url:
                                     st.download_button(
                                         label=f"💾 Save MP4 File ({clip['start']})",
                                         data=file,
-                                        file_name=f"podcast_clip_{idx+1}_{clip['start'].replace(':', '-')}.mp4",
+                                        file_name=(
+                                            f"podcast_clip_{idx+1}_"
+                                            f"{clip['start'].replace(':', '-')}.mp4"
+                                        ),
                                         mime="video/mp4",
                                         key=f"dl_btn_{idx}",
                                     )
                             else:
-                                st.error(f"Failed to extract video clip segment: {res}")
+                                st.error(
+                                    f"Failed to extract video clip segment: {res}"
+                                )
 
                 with c3:
                     st.markdown(
-                        f'''
+                        '''
                         <a href="https://www.capcut.com/editor" target="_blank" style="text-decoration:none;">
                             <button style="width:100%; background-color:#2563eb; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
                                 🎬 Edit in CapCut
