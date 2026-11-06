@@ -134,42 +134,52 @@ if video_url:
                 st.error("⚠️ Gemini API Key missing! Add GEMINI_API_KEY to Streamlit secrets or paste it in the sidebar.")
             else:
                 with st.spinner(f"Analyzing video content & extracting {max_clips} real viral highlights..."):
-                    try:
-                        model = genai.GenerativeModel("gemini-1.5-flash")
-                        
-                        prompt = f"""
-                        You are an expert video clipper (like Opus Pro). 
-                        Analyze this YouTube Video link: {video_url}
-                        
-                        Additional Context/Transcript provided: 
-                        {video_topic_context if video_topic_context else "None provided. Analyze the topic based on the link and title."}
-                        
-                        Focus Target: {scan_focus}
-                        
-                        Extract EXACTLY {max_clips} highly engaging viral clip segments.
-                        
-                        CRITICAL INSTRUCTIONS:
-                        1. Do NOT give fake or hardcoded static timestamps (like 00:45, 03:20). Estimate real timestamps based on key plot points, narrative climaxes, and topic transitions.
-                        2. Spread the clips out across the video timeline according to the Focus Target.
-                        3. Return ONLY a JSON array.
-                        
-                        Required JSON format:
-                        [
-                          {{
-                            "title": "Catchy Short Title",
-                            "score": 95,
-                            "start": "MM:SS",
-                            "end": "MM:SS",
-                            "hook": "Exact opening line or key phrase that hooks the viewer",
-                            "reason": "Why this timestamp section is high retention",
-                            "caption": "Karaoke subtitle preview text"
-                          }}
-                        ]
-                        """
-                        
-                        response = model.generate_content(prompt)
-                        raw_text = response.text
-                        
+                    # Dynamic model fallback handler to guarantee compatibility
+                    models_to_try = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
+                    raw_text = None
+                    last_error = None
+                    
+                    prompt = f"""
+                    You are an expert video clipper (like Opus Pro). 
+                    Analyze this YouTube Video link: {video_url}
+                    
+                    Additional Context/Transcript provided: 
+                    {video_topic_context if video_topic_context else "None provided. Analyze the topic based on the link and title."}
+                    
+                    Focus Target: {scan_focus}
+                    
+                    Extract EXACTLY {max_clips} highly engaging viral clip segments.
+                    
+                    CRITICAL INSTRUCTIONS:
+                    1. Do NOT give fake or hardcoded static timestamps. Estimate real timestamps based on key plot points, narrative climaxes, and topic transitions across the whole video.
+                    2. Spread the clips out across the video timeline according to the Focus Target.
+                    3. Return ONLY a valid JSON array.
+                    
+                    Required JSON format:
+                    [
+                      {{
+                        "title": "Catchy Short Title",
+                        "score": 95,
+                        "start": "MM:SS",
+                        "end": "MM:SS",
+                        "hook": "Exact opening line or key phrase that hooks the viewer",
+                        "reason": "Why this timestamp section is high retention",
+                        "caption": "Karaoke subtitle preview text"
+                      }}
+                    ]
+                    """
+                    
+                    for model_name in models_to_try:
+                        try:
+                            model = genai.GenerativeModel(model_name)
+                            response = model.generate_content(prompt)
+                            raw_text = response.text
+                            if raw_text:
+                                break
+                        except Exception as e:
+                            last_error = e
+
+                    if raw_text:
                         json_match = re.search(r'\[.*\]', raw_text, re.DOTALL)
                         if json_match:
                             parsed_clips = json.loads(json_match.group(0))
@@ -178,8 +188,8 @@ if video_url:
                         else:
                             st.error("Could not parse JSON output from AI. Raw response received:")
                             st.code(raw_text)
-                    except Exception as e:
-                        st.error(f"Gemini API Error: {str(e)}")
+                    else:
+                        st.error(f"Gemini API Error: {str(last_error)}")
 
     if 'clips' in st.session_state and st.session_state['clips']:
         st.divider()
