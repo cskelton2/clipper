@@ -90,18 +90,17 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 YouTube Authentication")
     
-    use_oauth = st.checkbox("Enable Google / YouTube Account Sign-In (OAuth)", value=True, help="Automatically prompts a Google Device Sign-In link when YouTube requests human verification.")
-
-    # Optional Cookie Uploader (Backup fallback)
-    uploaded_cookie = st.file_uploader("Or Upload cookies.txt (Optional)", type=["txt"])
+    # Cookie Uploader & Text Box for Authentication
+    uploaded_cookie = st.file_uploader("Upload cookies.txt (Bypasses Bot Block)", type=["txt"])
     if uploaded_cookie:
         with open("cookies.txt", "wb") as f:
             f.write(uploaded_cookie.getbuffer())
         st.success("✅ Cookies loaded successfully!")
 
-    browser_cookie = st.selectbox("Auto-Extract Browser Cookies", ["None", "chrome", "firefox", "edge", "safari", "brave"])
-    if browser_cookie != "None":
-        st.session_state['browser_cookie'] = browser_cookie
+    raw_cookies = st.text_area("Or Paste Raw Cookie Header/Text:", placeholder="# Netscape HTTP Cookie File or raw cookie string...", height=80)
+    if raw_cookies:
+        with open("cookies.txt", "w") as f:
+            f.write(raw_cookies)
 
 if api_key:
     genai.configure(api_key=api_key)
@@ -241,7 +240,7 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp + Google OAuth Device Login"""
+    """Render and download video clip segment using yt-dlp + Android TV / Public endpoints"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
@@ -251,42 +250,22 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
 
         cookie_args = []
         cookie_file = get_cookie_file_path()
-        browser = st.session_state.get('browser_cookie', 'None')
-        
-        # Validate browser cookie availability on host system
-        browser_valid = False
-        if browser and browser != "None":
-            # Check if browser config path exists on Linux/Cloud hosts
-            user_home = os.path.expanduser("~")
-            browser_paths = {
-                "chrome": os.path.join(user_home, ".config/google-chrome"),
-                "firefox": os.path.join(user_home, ".mozilla/firefox"),
-                "edge": os.path.join(user_home, ".config/microsoft-edge"),
-                "brave": os.path.join(user_home, ".config/BraveSoftware")
-            }
-            if browser in browser_paths and os.path.exists(browser_paths[browser]):
-                browser_valid = True
-
         if cookie_file:
             cookie_args = ["--cookies", cookie_file]
-        elif browser_valid:
-            cookie_args = ["--cookies-from-browser", browser]
-        else:
-            # Enable OAuth2 Google Sign-in flow natively in yt-dlp for cloud environments
-            cookie_args = ["--username", "oauth2", "--password", ""]
 
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+        # Client configurations that bypass bot verification without requiring OAuth tokens
         client_configs = [
             "youtube:player_client=tvhtml5,web",
-            "youtube:player_client=android_vr,ios",
+            "youtube:player_client=android_tv,web",
             "youtube:player_client=web_creator"
         ]
 
         stream_url = None
         last_error = ""
 
-        # Step 1: Extract direct stream URL via yt-dlp -g with OAuth authentication support
+        # Step 1: Extract direct stream URL via yt-dlp -g
         for client_opt in client_configs:
             cmd_get_url = [
                 "yt-dlp",
@@ -326,7 +305,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             else:
                 last_error = ffmpeg_res.stderr
 
-        # Step 3: Native yt-dlp fallback with OAuth support
+        # Step 3: Native yt-dlp fallback
         fallback_cmd = [
             "yt-dlp",
             *js_args,
