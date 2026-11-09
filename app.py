@@ -100,7 +100,7 @@ def parse_vtt_subtitles(vtt_path):
         with open(vtt_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
         
-        time_pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[.,](\d{3})')
+        time_pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[.,](\d{3})|(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{2}):(\d{2})[.,](\d{3})')
         current_time_str = None
         seen_texts = set()
         
@@ -108,12 +108,14 @@ def parse_vtt_subtitles(vtt_path):
             line_str = line.strip()
             match = time_pattern.search(line_str)
             if match:
-                hours, minutes, seconds = int(match.group(1)), int(match.group(2)), int(match.group(3))
-                if hours > 0:
-                    current_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
+                groups = [g for g in match.groups() if g is not None]
+                if len(groups) >= 8:
+                    hours, minutes, seconds = int(groups[0]), int(groups[1]), int(groups[2])
+                    current_time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
+                elif len(groups) >= 4:
+                    minutes, seconds = int(groups[0]), int(groups[1])
                     current_time_str = f"{minutes:02d}:{seconds:02d}"
-            elif current_time_str and line_str and not '-->' in line_str and not line_str.isdigit():
+            elif current_time_str and line_str and not '-->' in line_str and not line_str.isdigit() and not line_str.startswith('WEBVTT') and not line_str.startswith('Kind:') and not line_str.startswith('Language:'):
                 clean_text = re.sub(r'<[^>]*>', '', line_str).strip()
                 if clean_text and clean_text not in seen_texts:
                     seen_texts.add(clean_text)
@@ -126,39 +128,46 @@ def parse_vtt_subtitles(vtt_path):
 def fetch_auto_transcript(yt_id, full_url):
     """Multi-tiered caption extraction engine bypassing cloud server blocks"""
     
-    # Tier 1: yt-dlp Subtitle Extraction using Android/iOS client emulation
-    try:
-        vtt_prefix = f"caption_{yt_id}"
-        # Clean up old temporary caption files
-        for old_file in glob.glob(f"{vtt_prefix}*"):
-            try: os.remove(old_file)
-            except: pass
+    # Tier 1: yt-dlp Subtitle Extraction using mweb / android client proxies
+    client_configs = [
+        ["--extractor-args", "youtube:player_client=mweb,web"],
+        ["--extractor-args", "youtube:player_client=android,ios"],
+        ["--extractor-args", "youtube:player_client=web"]
+    ]
 
-        cmd = [
-            "yt-dlp",
-            "--extractor-args", "youtube:player_client=android,web",
-            "--user-agent", "Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/114.0 Firefox/114.0",
-            "--skip-download",
-            "--write-auto-subs",
-            "--write-subs",
-            "--sub-lang", "en,en-US,en-GB",
-            "--sub-format", "vtt",
-            "-o", f"{vtt_prefix}.%(ext)s",
-            full_url
-        ]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        
-        # Check generated subtitle files
-        sub_files = glob.glob(f"{vtt_prefix}*.vtt")
-        if sub_files:
-            parsed_text = parse_vtt_subtitles(sub_files[0])
-            for sf in sub_files:
-                try: os.remove(sf)
+    vtt_prefix = f"caption_{yt_id}"
+
+    for client_args in client_configs:
+        try:
+            # Clean up previous caption files
+            for old_file in glob.glob(f"{vtt_prefix}*"):
+                try: os.remove(old_file)
                 except: pass
-            if parsed_text and len(parsed_text) > 50:
-                return parsed_text
-    except Exception:
-        pass
+
+            cmd = [
+                "yt-dlp",
+                *client_args,
+                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                "--skip-download",
+                "--write-auto-subs",
+                "--write-subs",
+                "--sub-lang", "en.*,en,en-US,en-GB",
+                "--sub-format", "vtt",
+                "-o", f"{vtt_prefix}.%(ext)s",
+                full_url
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+            
+            sub_files = glob.glob(f"{vtt_prefix}*.vtt")
+            if sub_files:
+                parsed_text = parse_vtt_subtitles(sub_files[0])
+                for sf in sub_files:
+                    try: os.remove(sf)
+                    except: pass
+                if parsed_text and len(parsed_text) > 50:
+                    return parsed_text
+        except Exception:
+            continue
 
     # Tier 2: youtube-transcript-api fallback
     try:
