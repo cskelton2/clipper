@@ -90,14 +90,18 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 YouTube Authentication")
     
-    # Cookie Uploader to pass human authentication session
-    uploaded_cookie = st.file_uploader("Upload cookies.txt (Bypasses Bot Block)", type=["txt"])
+    use_oauth = st.checkbox("Enable Google / YouTube Account Sign-In (OAuth)", value=True, help="Automatically prompts a Google Device Sign-In link when YouTube requests human verification.")
+
+    # Optional Cookie Uploader (Backup fallback)
+    uploaded_cookie = st.file_uploader("Or Upload cookies.txt (Optional)", type=["txt"])
     if uploaded_cookie:
         with open("cookies.txt", "wb") as f:
             f.write(uploaded_cookie.getbuffer())
         st.success("✅ Cookies loaded successfully!")
 
     browser_cookie = st.selectbox("Auto-Extract Browser Cookies", ["None", "chrome", "firefox", "edge", "safari", "brave"])
+    if browser_cookie != "None":
+        st.session_state['browser_cookie'] = browser_cookie
 
 if api_key:
     genai.configure(api_key=api_key)
@@ -160,7 +164,6 @@ def fetch_auto_transcript(yt_id, full_url):
     js_runtimes = get_js_runtime_config()
     js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-    # Inject Cookies if provided via upload or browser export
     cookie_args = []
     cookie_file = get_cookie_file_path()
     browser = st.session_state.get('browser_cookie', 'None')
@@ -169,6 +172,9 @@ def fetch_auto_transcript(yt_id, full_url):
         cookie_args = ["--cookies", cookie_file]
     elif browser and browser != "None":
         cookie_args = ["--cookies-from-browser", browser]
+    else:
+        # Pass OAuth parameters to prompt Google device auth if needed
+        cookie_args = ["--username", "oauth2", "--password", ""]
 
     client_configs = [
         ["--extractor-args", "youtube:player_client=tvhtml5,web_creator"],
@@ -241,7 +247,7 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp direct stream fetching + ffmpeg cut with HTTP headers"""
+    """Render and download video clip segment using yt-dlp + Google OAuth Device Login"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
@@ -249,7 +255,6 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-        # Check for cookies file or browser authentication
         cookie_args = []
         cookie_file = get_cookie_file_path()
         browser = st.session_state.get('browser_cookie', 'None')
@@ -258,11 +263,14 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             cookie_args = ["--cookies", cookie_file]
         elif browser and browser != "None":
             cookie_args = ["--cookies-from-browser", browser]
+        else:
+            # Enable OAuth2 Google Sign-in flow natively in yt-dlp
+            cookie_args = ["--username", "oauth2", "--password", ""]
 
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
         client_configs = [
-            "youtube:player_client=web,tvhtml5",
+            "youtube:player_client=tvhtml5,web",
             "youtube:player_client=android_vr,ios",
             "youtube:player_client=web_creator"
         ]
@@ -270,7 +278,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         stream_url = None
         last_error = ""
 
-        # Step 1: Extract direct stream URL via yt-dlp -g with cookies
+        # Step 1: Extract direct stream URL via yt-dlp -g with OAuth authentication support
         for client_opt in client_configs:
             cmd_get_url = [
                 "yt-dlp",
@@ -282,7 +290,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                 "-f", "b[ext=mp4]/best[ext=mp4]/best",
                 video_url
             ]
-            res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=30)
+            res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=35)
             if res.returncode == 0 and res.stdout.strip():
                 stream_url = res.stdout.strip().split('\n')[0]
                 break
@@ -310,12 +318,12 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             else:
                 last_error = ffmpeg_res.stderr
 
-        # Step 3: Native yt-dlp section download fallback with cookies
+        # Step 3: Native yt-dlp fallback with OAuth support
         fallback_cmd = [
             "yt-dlp",
             *js_args,
             *cookie_args,
-            "--extractor-args", "youtube:player_client=web,ios",
+            "--extractor-args", "youtube:player_client=tvhtml5,web",
             "--user-agent", user_agent,
             "--download-sections", f"*{start_sec}-{end_sec}",
             "--force-keyframes-at-cuts",
@@ -330,7 +338,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         else:
             last_error = fb_res.stderr
 
-        return False, f"Bot Bypass Error: {last_error if last_error else 'Could not retrieve video stream.'}"
+        return False, f"Auth Bypass Error: {last_error if last_error else 'Could not retrieve video stream.'}"
     except Exception as e:
         return False, str(e)
 
