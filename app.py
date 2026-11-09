@@ -247,8 +247,8 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
             return True, output_filename
 
-        # Stage 2: Extract direct stream URL
-        stream_url = None
+        # Stage 2: Extract direct stream URL from Cobalt or Invidious or yt-dlp -g
+        stream_urls = []
 
         # Try Cobalt APIs
         cobalt_endpoints = [
@@ -272,13 +272,13 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                 with urllib.request.urlopen(req, timeout=6) as resp:
                     res_data = json.loads(resp.read().decode())
                     if res_data.get("url"):
-                        stream_url = res_data.get("url")
+                        stream_urls.append(res_data.get("url"))
                         break
             except Exception:
                 continue
 
         # Try Invidious APIs
-        if not stream_url and yt_id:
+        if yt_id:
             invidious_instances = [
                 f"https://invidious.nerdvpn.de/api/v1/videos/{yt_id}",
                 f"https://vid.puffyan.us/api/v1/videos/{yt_id}",
@@ -292,28 +292,44 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                         v_data = json.loads(response.read().decode())
                         format_streams = v_data.get('formatStreams', [])
                         if format_streams:
-                            stream_url = format_streams[-1].get('url')
-                            if stream_url:
+                            st_url = format_streams[-1].get('url')
+                            if st_url:
+                                stream_urls.append(st_url)
                                 break
                 except Exception:
                     continue
 
-        if stream_url:
-            # Stage 3: Download bytes via Python urllib directly to avoid FFmpeg network blockades
+        # Try raw yt-dlp stream extraction URL (-g)
+        try:
+            get_url_cmd = [
+                "yt-dlp",
+                *js_args,
+                "--user-agent", user_agent,
+                "-g",
+                "-f", "b[ext=mp4]/best",
+                video_url
+            ]
+            g_res = subprocess.run(get_url_cmd, capture_output=True, text=True, timeout=15)
+            if g_res.returncode == 0 and g_res.stdout.strip():
+                stream_urls.append(g_res.stdout.strip().split('\n')[0])
+        except Exception:
+            pass
+
+        # Stage 3: Download stream via redirect-aware opener
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+        opener.addheaders = [
+            ('User-Agent', user_agent),
+            ('Referer', 'https://www.youtube.com/'),
+            ('Accept', '*/*')
+        ]
+
+        for s_url in stream_urls:
             try:
-                req = urllib.request.Request(
-                    stream_url,
-                    headers={
-                        'User-Agent': user_agent,
-                        'Referer': 'https://www.youtube.com/',
-                        'Accept': '*/*'
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=30) as resp, open(temp_full_video, 'wb') as out_file:
+                with opener.open(s_url, timeout=30) as resp, open(temp_full_video, 'wb') as out_file:
                     shutil.copyfileobj(resp, out_file)
 
-                if os.path.exists(temp_full_video) and os.path.getsize(temp_full_video) > 0:
-                    # Trim locally downloaded file via FFmpeg
+                if os.path.exists(temp_full_video) and os.path.getsize(temp_full_video) > 1024:
+                    # Trim locally downloaded media via FFmpeg
                     ffmpeg_crop_cmd = [
                         "ffmpeg",
                         "-y",
