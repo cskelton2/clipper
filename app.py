@@ -253,12 +253,26 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         cookie_file = get_cookie_file_path()
         browser = st.session_state.get('browser_cookie', 'None')
         
+        # Validate browser cookie availability on host system
+        browser_valid = False
+        if browser and browser != "None":
+            # Check if browser config path exists on Linux/Cloud hosts
+            user_home = os.path.expanduser("~")
+            browser_paths = {
+                "chrome": os.path.join(user_home, ".config/google-chrome"),
+                "firefox": os.path.join(user_home, ".mozilla/firefox"),
+                "edge": os.path.join(user_home, ".config/microsoft-edge"),
+                "brave": os.path.join(user_home, ".config/BraveSoftware")
+            }
+            if browser in browser_paths and os.path.exists(browser_paths[browser]):
+                browser_valid = True
+
         if cookie_file:
             cookie_args = ["--cookies", cookie_file]
-        elif browser and browser != "None":
+        elif browser_valid:
             cookie_args = ["--cookies-from-browser", browser]
         else:
-            # Enable OAuth2 Google Sign-in flow natively in yt-dlp
+            # Enable OAuth2 Google Sign-in flow natively in yt-dlp for cloud environments
             cookie_args = ["--username", "oauth2", "--password", ""]
 
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
