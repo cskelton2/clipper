@@ -172,14 +172,12 @@ def fetch_auto_transcript(yt_id, full_url):
         cookie_args = ["--cookies", cookie_file]
     elif browser and browser != "None":
         cookie_args = ["--cookies-from-browser", browser]
-    else:
-        # Pass OAuth parameters to prompt Google device auth if needed
-        cookie_args = ["--username", "oauth2", "--password", ""]
 
+    # Non-interactive client order for background fetching
     client_configs = [
-        ["--extractor-args", "youtube:player_client=tvhtml5,web_creator"],
-        ["--extractor-args", "youtube:player_client=android_vr,web"],
-        ["--extractor-args", "youtube:player_client=web"]
+        ["--extractor-args", "youtube:player_client=mweb,web"],
+        ["--extractor-args", "youtube:player_client=android,ios"],
+        ["--extractor-args", "youtube:player_client=tvhtml5,web"]
     ]
 
     vtt_prefix = f"caption_{yt_id}"
@@ -205,7 +203,7 @@ def fetch_auto_transcript(yt_id, full_url):
                 "-o", f"{vtt_prefix}.%(ext)s",
                 full_url
             ]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+            subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             
             sub_files = glob.glob(f"{vtt_prefix}*.vtt")
             if sub_files:
@@ -218,7 +216,7 @@ def fetch_auto_transcript(yt_id, full_url):
         except Exception:
             continue
 
-    # Tier 2: youtube-transcript-api fallback
+    # Tier 2: youtube-transcript-api fallback (works without auth for public videos)
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB'])
         formatted_lines = []
