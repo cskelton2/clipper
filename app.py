@@ -216,7 +216,7 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using Web Proxy APIs + direct stream fallbacks"""
+    """Render and download video clip segment using direct HTTP chunk downloading + FFmpeg trimming"""
     try:
         if os.path.exists(output_filename):
             try: os.remove(output_filename)
@@ -225,8 +225,9 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         yt_id = parse_youtube_id(video_url)
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         duration = max(1, end_sec - start_sec)
+        temp_full_video = f"temp_full_{yt_id}.mp4"
 
-        # Stage 1: Try direct stream fetch & trim with yt-dlp + ffmpeg pipeline
+        # Stage 1: Try direct section extraction with yt-dlp
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
         
@@ -246,7 +247,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
             return True, output_filename
 
-        # Stage 2: Fallback - Extract URL and use robust FFmpeg stream download with complete headers
+        # Stage 2: Extract direct stream URL
         stream_url = None
 
         # Try Cobalt APIs
@@ -298,30 +299,49 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                     continue
 
         if stream_url:
-            # FFmpeg execution with full HTTP authentication headers
-            headers_str = f"User-Agent: {user_agent}\r\nReferer: https://www.youtube.com/\r\nAccept: */*\r\n"
-            
-            ffmpeg_reencode_cmd = [
-                "ffmpeg",
-                "-y",
-                "-headers", headers_str,
-                "-ss", str(start_sec),
-                "-i", stream_url,
-                "-t", str(duration),
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-crf", "24",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-avoid_negative_ts", "make_zero",
-                output_filename
-            ]
-            subprocess.run(ffmpeg_reencode_cmd, capture_output=True, text=True, timeout=75)
+            # Stage 3: Download bytes via Python urllib directly to avoid FFmpeg network blockades
+            try:
+                req = urllib.request.Request(
+                    stream_url,
+                    headers={
+                        'User-Agent': user_agent,
+                        'Referer': 'https://www.youtube.com/',
+                        'Accept': '*/*'
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp, open(temp_full_video, 'wb') as out_file:
+                    shutil.copyfileobj(resp, out_file)
 
-            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
-                return True, output_filename
+                if os.path.exists(temp_full_video) and os.path.getsize(temp_full_video) > 0:
+                    # Trim locally downloaded file via FFmpeg
+                    ffmpeg_crop_cmd = [
+                        "ffmpeg",
+                        "-y",
+                        "-ss", str(start_sec),
+                        "-i", temp_full_video,
+                        "-t", str(duration),
+                        "-c:v", "libx264",
+                        "-preset", "ultrafast",
+                        "-crf", "24",
+                        "-c:a", "aac",
+                        "-b:a", "128k",
+                        "-avoid_negative_ts", "make_zero",
+                        output_filename
+                    ]
+                    subprocess.run(ffmpeg_crop_cmd, capture_output=True, text=True, timeout=60)
 
-        return False, "FFmpeg stream extraction failed. Video host blocked connection or file is unreadable."
+                    if os.path.exists(temp_full_video):
+                        try: os.remove(temp_full_video)
+                        except: pass
+
+                    if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+                        return True, output_filename
+            except Exception:
+                if os.path.exists(temp_full_video):
+                    try: os.remove(temp_full_video)
+                    except: pass
+
+        return False, "Stream extraction failed. Video host blocked server connection."
     except Exception as e:
         return False, str(e)
 
