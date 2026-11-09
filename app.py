@@ -216,50 +216,53 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using direct HTTP chunk downloading + FFmpeg trimming"""
+    """Render and download video clip segment using robust client rotation and fallback proxies"""
     try:
         if os.path.exists(output_filename):
             try: os.remove(output_filename)
             except: pass
 
         yt_id = parse_youtube_id(video_url)
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         duration = max(1, end_sec - start_sec)
-        temp_full_video = f"temp_full_{yt_id}.mp4"
-
-        # Stage 1: Try direct section extraction with yt-dlp
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
-        
-        ytdlp_cmd = [
-            "yt-dlp",
-            *js_args,
-            "--user-agent", user_agent,
-            "--extractor-args", "youtube:player_client=android,mweb,web",
-            "--download-sections", f"*{start_sec}-{end_sec}",
-            "-f", "b[ext=mp4]/best[ext=mp4]/best",
-            "-o", output_filename,
-            video_url
-        ]
-        
-        res = subprocess.run(ytdlp_cmd, capture_output=True, text=True, timeout=90)
-        
-        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
-            return True, output_filename
 
-        # Stage 2: Extract direct stream URL from Cobalt or Invidious or yt-dlp -g
-        stream_urls = []
-
-        # Try Cobalt APIs
-        cobalt_endpoints = [
-            "https://co.wuk.sh/api/json",
-            "https://api.cobalt.tools/api/json",
-            "https://cobalt.stream/api/json"
+        # Attempt 1: High-compatibility mobile client rotation via yt-dlp
+        clients_to_try = [
+            "android_vr,ios",
+            "ios,mweb",
+            "web_creator,android"
         ]
-        
-        for ep in cobalt_endpoints:
+
+        for client_pair in clients_to_try:
+            cmd = [
+                "yt-dlp",
+                *js_args,
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "--extractor-args", f"youtube:player_client={client_pair}",
+                "--download-sections", f"*{start_sec}-{end_sec}",
+                "--force-keyframes-at-cuts",
+                "-f", "bv*[ext=mp4]+ba*[ext=m4a]/b[ext=mp4]/best",
+                "-o", output_filename,
+                video_url
+            ]
             try:
-                payload = json.dumps({"url": video_url, "vQuality": "720"}).encode('utf-8')
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+                    return True, output_filename
+            except Exception:
+                continue
+
+        # Attempt 2: Direct Cobalt API stream proxy fetch
+        cobalt_apis = [
+            "https://co.wuk.sh/api/json",
+            "https://api.cobalt.tools/api/json"
+        ]
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        
+        for ep in cobalt_apis:
+            try:
+                payload = json.dumps({"url": video_url, "vQuality": "720", "isAudioOnly": False}).encode('utf-8')
                 req = urllib.request.Request(
                     ep,
                     data=payload,
@@ -269,95 +272,26 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                         'User-Agent': user_agent
                     }
                 )
-                with urllib.request.urlopen(req, timeout=6) as resp:
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     res_data = json.loads(resp.read().decode())
-                    if res_data.get("url"):
-                        stream_urls.append(res_data.get("url"))
-                        break
+                    stream_url = res_data.get("url")
+                    if stream_url:
+                        ffmpeg_cmd = [
+                            "ffmpeg",
+                            "-y",
+                            "-ss", str(start_sec),
+                            "-i", stream_url,
+                            "-t", str(duration),
+                            "-c", "copy",
+                            output_filename
+                        ]
+                        subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=60)
+                        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+                            return True, output_filename
             except Exception:
                 continue
 
-        # Try Invidious APIs
-        if yt_id:
-            invidious_instances = [
-                f"https://invidious.nerdvpn.de/api/v1/videos/{yt_id}",
-                f"https://vid.puffyan.us/api/v1/videos/{yt_id}",
-                f"https://inv.riverside.rocks/api/v1/videos/{yt_id}",
-                f"https://invidious.drgns.space/api/v1/videos/{yt_id}"
-            ]
-            for inv_url in invidious_instances:
-                try:
-                    req = urllib.request.Request(inv_url, headers={'User-Agent': user_agent})
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        v_data = json.loads(response.read().decode())
-                        format_streams = v_data.get('formatStreams', [])
-                        if format_streams:
-                            st_url = format_streams[-1].get('url')
-                            if st_url:
-                                stream_urls.append(st_url)
-                                break
-                except Exception:
-                    continue
-
-        # Try raw yt-dlp stream extraction URL (-g)
-        try:
-            get_url_cmd = [
-                "yt-dlp",
-                *js_args,
-                "--user-agent", user_agent,
-                "-g",
-                "-f", "b[ext=mp4]/best",
-                video_url
-            ]
-            g_res = subprocess.run(get_url_cmd, capture_output=True, text=True, timeout=15)
-            if g_res.returncode == 0 and g_res.stdout.strip():
-                stream_urls.append(g_res.stdout.strip().split('\n')[0])
-        except Exception:
-            pass
-
-        # Stage 3: Download stream via redirect-aware opener
-        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-        opener.addheaders = [
-            ('User-Agent', user_agent),
-            ('Referer', 'https://www.youtube.com/'),
-            ('Accept', '*/*')
-        ]
-
-        for s_url in stream_urls:
-            try:
-                with opener.open(s_url, timeout=30) as resp, open(temp_full_video, 'wb') as out_file:
-                    shutil.copyfileobj(resp, out_file)
-
-                if os.path.exists(temp_full_video) and os.path.getsize(temp_full_video) > 1024:
-                    # Trim locally downloaded media via FFmpeg
-                    ffmpeg_crop_cmd = [
-                        "ffmpeg",
-                        "-y",
-                        "-ss", str(start_sec),
-                        "-i", temp_full_video,
-                        "-t", str(duration),
-                        "-c:v", "libx264",
-                        "-preset", "ultrafast",
-                        "-crf", "24",
-                        "-c:a", "aac",
-                        "-b:a", "128k",
-                        "-avoid_negative_ts", "make_zero",
-                        output_filename
-                    ]
-                    subprocess.run(ffmpeg_crop_cmd, capture_output=True, text=True, timeout=60)
-
-                    if os.path.exists(temp_full_video):
-                        try: os.remove(temp_full_video)
-                        except: pass
-
-                    if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
-                        return True, output_filename
-            except Exception:
-                if os.path.exists(temp_full_video):
-                    try: os.remove(temp_full_video)
-                    except: pass
-
-        return False, "Stream extraction failed. Video host blocked server connection."
+        return False, "Cloud host IP blocked by YouTube. Please try again or use direct stream download."
     except Exception as e:
         return False, str(e)
 
