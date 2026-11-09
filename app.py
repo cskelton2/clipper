@@ -212,13 +212,15 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp direct stream fetching + ffmpeg cut"""
+    """Render and download video clip segment using yt-dlp direct stream fetching + ffmpeg cut with HTTP headers"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
 
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
+
+        user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
 
         # Stream extraction client configurations prioritized by anti-bot success
         client_configs = [
@@ -236,7 +238,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                 "yt-dlp",
                 *js_args,
                 "--extractor-args", client_opt,
-                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+                "--user-agent", user_agent,
                 "-g",
                 "-f", "b[ext=mp4]/best[ext=mp4]/best",
                 video_url
@@ -249,12 +251,13 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             else:
                 last_error = res.stderr
 
-        # Step 2: Use FFmpeg to trim directly from the stream URL
+        # Step 2: Use FFmpeg with User-Agent HTTP Headers to trim directly from the stream URL
         if stream_url:
             duration = max(1, end_sec - start_sec)
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-y",
+                "-headers", f"User-Agent: {user_agent}\r\n",
                 "-ss", str(start_sec),
                 "-i", stream_url,
                 "-t", str(duration),
@@ -268,6 +271,25 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                 return True, output_filename
             else:
                 last_error = ffmpeg_res.stderr
+
+        # Step 3: Fallback - Native yt-dlp trimmed download if direct HTTP streaming fails
+        fallback_cmd = [
+            "yt-dlp",
+            *js_args,
+            "--extractor-args", "youtube:player_client=ios,web",
+            "--user-agent", user_agent,
+            "--download-sections", f"*{start_sec}-{end_sec}",
+            "--force-keyframes-at-cuts",
+            "-f", "b[ext=mp4]/best[ext=mp4]/best",
+            "-o", output_filename,
+            video_url
+        ]
+        fb_res = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=90)
+        
+        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+            return True, output_filename
+        else:
+            last_error = fb_res.stderr
 
         return False, f"Bot Bypass Error: {last_error if last_error else 'Could not retrieve video stream.'}"
     except Exception as e:
