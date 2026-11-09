@@ -212,7 +212,7 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp & ffmpeg with bot-bypass client parameters"""
+    """Render and download video clip segment using yt-dlp direct stream fetching + ffmpeg cut"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
@@ -220,37 +220,56 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-        # Try client fallbacks to bypass bot-checks and SABR token issues
-        client_options = [
-            "youtube:player_client=tvhtml5,web_creator",
-            "youtube:player_client=android_vr,web",
-            "youtube:player_client=web"
+        # Stream extraction client configurations prioritized by anti-bot success
+        client_configs = [
+            "youtube:player_client=ios,android",
+            "youtube:player_client=web_creator,tvhtml5",
+            "youtube:player_client=android_vr,web"
         ]
 
+        stream_url = None
         last_error = ""
-        for client_opt in client_options:
-            cmd = [
+
+        # Step 1: Extract direct stream URL via yt-dlp -g
+        for client_opt in client_configs:
+            cmd_get_url = [
                 "yt-dlp",
                 *js_args,
                 "--extractor-args", client_opt,
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "--force-ipv4",
-                "--no-cache-dir",
-                "-f", "b[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-                "--download-sections", f"*{start_sec}-{end_sec}",
-                "--force-keyframes-at-cuts",
-                "--no-check-certificates",
-                "-o", output_filename,
+                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+                "-g",
+                "-f", "b[ext=mp4]/best[ext=mp4]/best",
                 video_url
             ]
+            res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=30)
+            if res.returncode == 0 and res.stdout.strip():
+                # Take the first stream URL returned
+                stream_url = res.stdout.strip().split('\n')[0]
+                break
+            else:
+                last_error = res.stderr
+
+        # Step 2: Use FFmpeg to trim directly from the stream URL
+        if stream_url:
+            duration = max(1, end_sec - start_sec)
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-ss", str(start_sec),
+                "-i", stream_url,
+                "-t", str(duration),
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                output_filename
+            ]
+            ffmpeg_res = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=60)
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+            if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
                 return True, output_filename
             else:
-                last_error = result.stderr
+                last_error = ffmpeg_res.stderr
 
-        return False, f"yt-dlp Error: {last_error}"
+        return False, f"Bot Bypass Error: {last_error if last_error else 'Could not retrieve video stream.'}"
     except Exception as e:
         return False, str(e)
 
