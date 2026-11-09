@@ -91,6 +91,14 @@ with st.sidebar:
     st.divider()
     st.subheader("🔑 YouTube Authentication")
     
+    # Quick Tutorial Expander
+    with st.expander("📖 Quick 3-Step Cookie Tutorial (Bypass Bot Check)"):
+        st.markdown("""
+        1. **Install Extension**: Add **"Get cookies.txt LOCALLY"** (Chrome/Firefox).
+        2. **Open YouTube**: Go to [YouTube.com](https://youtube.com) while signed into your Google account.
+        3. **Export & Copy**: Click the extension icon, click **Export**, and drag the `cookies.txt` file below (or copy & paste the text).
+        """)
+
     # Cookie Uploader & Text Box for Authentication
     uploaded_cookie = st.file_uploader("Upload cookies.txt (Bypasses Bot Block)", type=["txt"])
     if uploaded_cookie:
