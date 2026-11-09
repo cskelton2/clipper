@@ -5,6 +5,7 @@ import json
 import urllib.request
 import os
 import subprocess
+import glob
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 st.set_page_config(
@@ -73,7 +74,7 @@ if api_key:
     genai.configure(api_key=api_key)
 
 st.markdown('<p class="main-header">🎬 OpusCut AI Studio</p>', unsafe_allow_html=True)
-st.caption("Supports full-length podcasts up to 3+ hours with exact timed transcript alignment and in-app MP4 clipping.")
+st.caption("Supports full-length podcasts up to 3+ hours with robust YouTube caption scraping and direct MP4 clipping.")
 st.write("")
 
 video_url = st.text_input("🔗 Paste YouTube Video or Podcast Link:", placeholder="https://www.youtube.com/watch?v=...")
@@ -93,14 +94,15 @@ def fetch_youtube_metadata(yt_id):
         return ""
 
 def parse_vtt_subtitles(vtt_path):
-    """Helper to parse VTT subtitle files downloaded via yt-dlp into timestamped text lines"""
+    """Parses VTT subtitle files into clean timestamped transcript lines"""
     formatted_lines = []
     try:
-        with open(vtt_path, 'r', encoding='utf-8') as f:
+        with open(vtt_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
         
         time_pattern = re.compile(r'(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[.,](\d{3})')
         current_time_str = None
+        seen_texts = set()
         
         for line in lines:
             line_str = line.strip()
@@ -112,15 +114,53 @@ def parse_vtt_subtitles(vtt_path):
                 else:
                     current_time_str = f"{minutes:02d}:{seconds:02d}"
             elif current_time_str and line_str and not '-->' in line_str and not line_str.isdigit():
-                clean_text = re.sub(r'<[^>]*>', '', line_str)
-                formatted_lines.append(f"[{current_time_str}] {clean_text}")
-                current_time_str = None
+                clean_text = re.sub(r'<[^>]*>', '', line_str).strip()
+                if clean_text and clean_text not in seen_texts:
+                    seen_texts.add(clean_text)
+                    formatted_lines.append(f"[{current_time_str}] {clean_text}")
+                    current_time_str = None
     except Exception:
         pass
     return "\n".join(formatted_lines) if formatted_lines else None
 
 def fetch_auto_transcript(yt_id, full_url):
-    """Primary: youtube-transcript-api. Fallback: yt-dlp VTT subtitle extraction for cloud bypass"""
+    """Multi-tiered caption extraction engine bypassing cloud server blocks"""
+    
+    # Tier 1: yt-dlp Subtitle Extraction using Android/iOS client emulation
+    try:
+        vtt_prefix = f"caption_{yt_id}"
+        # Clean up old temporary caption files
+        for old_file in glob.glob(f"{vtt_prefix}*"):
+            try: os.remove(old_file)
+            except: pass
+
+        cmd = [
+            "yt-dlp",
+            "--extractor-args", "youtube:player_client=android,web",
+            "--user-agent", "Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/114.0 Firefox/114.0",
+            "--skip-download",
+            "--write-auto-subs",
+            "--write-subs",
+            "--sub-lang", "en,en-US,en-GB",
+            "--sub-format", "vtt",
+            "-o", f"{vtt_prefix}.%(ext)s",
+            full_url
+        ]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        # Check generated subtitle files
+        sub_files = glob.glob(f"{vtt_prefix}*.vtt")
+        if sub_files:
+            parsed_text = parse_vtt_subtitles(sub_files[0])
+            for sf in sub_files:
+                try: os.remove(sf)
+                except: pass
+            if parsed_text and len(parsed_text) > 50:
+                return parsed_text
+    except Exception:
+        pass
+
+    # Tier 2: youtube-transcript-api fallback
     try:
         transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB'])
         formatted_lines = []
@@ -129,36 +169,9 @@ def fetch_auto_transcript(yt_id, full_url):
             hours = start_sec // 3600
             minutes = (start_sec % 3600) // 60
             seconds = start_sec % 60
-            if hours > 0:
-                time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            else:
-                time_str = f"{minutes:02d}:{seconds:02d}"
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
             formatted_lines.append(f"[{time_str}] {line['text']}")
         return "\n".join(formatted_lines)
-    except Exception:
-        pass
-
-    try:
-        vtt_base = f"sub_{yt_id}"
-        cmd = [
-            "yt-dlp",
-            "--extractor-args", "youtube:player_client=ios,web",
-            "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-            "--skip-download",
-            "--write-auto-subs",
-            "--sub-lang", "en",
-            "-o", vtt_base,
-            full_url
-        ]
-        subprocess.run(cmd, capture_output=True, text=True)
-        
-        for ext in ['.en.vtt', '.vtt']:
-            target_file = vtt_base + ext
-            if os.path.exists(target_file):
-                parsed = parse_vtt_subtitles(target_file)
-                os.remove(target_file)
-                if parsed:
-                    return parsed
     except Exception:
         pass
 
@@ -166,7 +179,7 @@ def fetch_auto_transcript(yt_id, full_url):
 
 def timestamp_to_seconds(ts_str):
     try:
-        parts = ts_str.strip().split(':')
+        parts = str(ts_str).strip().split(':')
         if len(parts) == 3:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
         elif len(parts) == 2:
@@ -176,15 +189,15 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Uses yt-dlp with iOS/web client emulation flags and ffmpeg to cut exact video segments"""
+    """Render and download video clip segment using yt-dlp & ffmpeg"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
 
         cmd = [
             "yt-dlp",
-            "--extractor-args", "youtube:player_client=ios,web",
-            "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+            "--extractor-args", "youtube:player_client=android,web",
+            "--user-agent", "Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/114.0 Firefox/114.0",
             "-f", "b/best",
             "--download-sections", f"*{start_sec}-{end_sec}",
             "--no-check-certificates",
@@ -192,14 +205,14 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             video_url
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             return False, f"yt-dlp Error: {result.stderr}"
             
         if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
             return True, output_filename
         else:
-            return False, "Rendered file is missing or empty."
+            return False, "Rendered clip file is empty or missing."
     except Exception as e:
         return False, str(e)
 
@@ -215,7 +228,7 @@ if video_url:
     with col1:
         st.subheader("📹 Video Stream Preview")
         if video_title:
-            st.caption(f"📌 **Detected Video Title:** {video_title}")
+            st.caption(f"📌 **Detected Title:** {video_title}")
         
         seek_sec = st.session_state.get('seek_start', 0)
         if yt_id:
@@ -228,17 +241,24 @@ if video_url:
             try:
                 st.video(video_url, start_time=seek_sec)
             except Exception:
-                st.info("Direct preview unavailable.")
+                st.info("Direct video preview unavailable.")
     
     with col2:
-        st.subheader("📜 FULL-SPAN PODCAST TRANSCRIPT")
+        st.subheader("📜 CAPTIONS & TRANSCRIPT ENGINE")
         
-        fetched_transcript = fetch_auto_transcript(yt_id, video_url) if yt_id else None
-        
-        if fetched_transcript:
-            st.success("✅ Real timed transcript auto-detected (Supports up to 3+ hours)!")
+        # Auto-fetch captions button and status
+        if 'transcript_data' not in st.session_state or st.session_state.get('current_yt_id') != yt_id:
+            with st.spinner("⚡ Scraping YouTube captions using Android/Web Client..."):
+                fetched_transcript = fetch_auto_transcript(yt_id, video_url) if yt_id else None
+                st.session_state['transcript_data'] = fetched_transcript
+                st.session_state['current_yt_id'] = yt_id
         else:
-            st.warning("⚠️ Could not auto-grab YouTube captions. Paste transcript below to guarantee exact timestamp matching:")
+            fetched_transcript = st.session_state.get('transcript_data')
+
+        if fetched_transcript:
+            st.success("✅ Captions automatically scraped and timestamped!")
+        else:
+            st.warning("⚠️ Auto-caption fetch restricted by YouTube. Paste transcript below or click retry:")
 
         transcript_input = st.text_area(
             "Video / Podcast Timed Transcript:", 
@@ -246,43 +266,51 @@ if video_url:
             placeholder="[00:01:15] Spoken line 1...\n[01:45:22] Spoken line 2...",
             height=160
         )
-        
-        analyze_btn = st.button(f"🔥 Deep-Scan & Align Full Podcast Clips", type="primary", use_container_width=True)
+
+        col_fetch, col_scan = st.columns(2)
+        with col_fetch:
+            if st.button("🔄 Force Re-Fetch Captions", use_container_width=True):
+                with st.spinner("Re-extracting captions..."):
+                    st.session_state['transcript_data'] = fetch_auto_transcript(yt_id, video_url)
+                    st.rerun()
+
+        with col_scan:
+            analyze_btn = st.button("🔥 Deep-Scan & Align Clips", type="primary", use_container_width=True)
         
         if analyze_btn:
             if not api_key:
-                st.error("⚠️ Gemini API Key missing! Add GEMINI_API_KEY to Streamlit secrets or paste it in the sidebar.")
+                st.error("⚠️ Gemini API Key missing! Add GEMINI_API_KEY in sidebar or secrets.")
             elif not transcript_input and not video_title:
-                st.warning("Please provide transcript text or a video title.")
+                st.warning("Please provide transcript text or a valid video link.")
             else:
-                with st.spinner(f"Analyzing multi-hour podcast timeline across full duration..."):
+                with st.spinner("Scanning full timeline for viral highlights..."):
                     models_to_try = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
                     raw_text = None
                     last_error = None
                     
                     prompt = f"""
-                    You are an expert podcast editor and viral content strategist.
-                    VIDEO TITLE: {video_title if video_title else "Podcast Episode"}
+                    You are an expert short-form video editor and podcast strategist.
+                    VIDEO TITLE: {video_title if video_title else "YouTube Podcast"}
                     
-                    TIMED TRANSCRIPT (Spanning full length up to 3 hours):
+                    TIMED TRANSCRIPT:
                     {transcript_input if transcript_input else "Title: " + video_title}
                     
-                    CRITICAL REQUIREMENTS:
-                    1. Read timestamps in bracket format like [MM:SS] or [HH:MM:SS] across the ENTIRE duration (early, middle, and late hours).
-                    2. Choose {max_clips} viral podcast highlights distributed evenly across the full length.
-                    3. The "start" and "end" MUST match exact bracketed timestamps from the transcript.
-                    4. The "hook" and "caption" MUST be word-for-word quotes from the transcript at that EXACT start timestamp.
+                    INSTRUCTIONS:
+                    1. Read timestamped lines in bracket format like [MM:SS] or [HH:MM:SS] across the entire transcript.
+                    2. Extract {max_clips} viral podcast clip highlights.
+                    3. The "start" and "end" timestamps MUST match exact timestamps from the transcript.
+                    4. The "hook" and "caption" MUST be word-for-word quotes spoken at that exact start timestamp.
                     
                     Return ONLY a JSON array of objects with these exact keys:
                     [
                       {{
-                        "title": "Short Catchy Headline",
+                        "title": "Catchy Short Headline",
                         "score": 95,
                         "start": "MM:SS",
                         "end": "MM:SS",
-                        "hook": "Exact quote spoken at start timestamp",
-                        "reason": "Why this specific podcast section is viral",
-                        "caption": "Subtitles spoken at this exact timestamp"
+                        "hook": "Exact quote spoken at start",
+                        "reason": "Why this specific moment is viral",
+                        "caption": "Subtitles spoken at start"
                       }}
                     ]
                     """
@@ -303,14 +331,14 @@ if video_url:
                             parsed_clips = json.loads(json_match.group(0))
                             st.session_state['clips'] = parsed_clips
                         else:
-                            st.error("Could not parse JSON response from AI:")
+                            st.error("Could not parse JSON response from AI.")
                             st.code(raw_text)
                     else:
                         st.error(f"Gemini API Error: {str(last_error)}")
 
     if 'clips' in st.session_state and st.session_state['clips']:
         st.divider()
-        st.subheader(f"✂️ Extracted Podcast Clips for: {video_title if video_title else 'Your Video'}")
+        st.subheader(f"✂️ Extracted Shorts for: {video_title if video_title else 'Your Video'}")
         
         for idx, clip in enumerate(st.session_state['clips']):
             with st.container():
@@ -320,7 +348,7 @@ if video_url:
                         <h4 style="margin:0; color:#38bdf8;">Clip #{idx+1}: {clip['title']}</h4>
                         <span class="score-badge">🔥 Virality: {clip.get('score', 90)}/100</span>
                     </div>
-                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Exact Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>Context:</b> {clip.get('reason', '')}</p>
+                    <p style="margin-top:10px; color:#cbd5e1;">⏱️ <b>Timestamp:</b> <span style="color:#facc15; font-weight:bold;">{clip['start']} ➔ {clip['end']}</span> | 💡 <b>Context:</b> {clip.get('reason', '')}</p>
                     <p style="color:#f472b6;"><b>Viral Hook:</b> "{clip.get('hook', '')}"</p>
                     <div style="background:#0f172a; padding:10px; border-radius:6px; font-family:monospace; color:#facc15;">
                         💬 Subtitles: {clip.get('caption', '')}
@@ -332,7 +360,7 @@ if video_url:
                 
                 with c1:
                     start_sec = timestamp_to_seconds(clip['start'])
-                    if st.button(f"▶️ Jump & Play ({clip['start']})", key=f"play_{idx}", use_container_width=True):
+                    if st.button(f"▶️ Play Segment ({clip['start']})", key=f"play_{idx}", use_container_width=True):
                         st.session_state['seek_start'] = start_sec
                         st.rerun()
 
@@ -343,10 +371,10 @@ if video_url:
                         if e_sec <= s_sec:
                             e_sec = s_sec + 30
                         
-                        with st.spinner(f"Slicing clip from {clip['start']} to {clip['end']}..."):
+                        with st.spinner(f"Rendering clip ({clip['start']} to {clip['end']})..."):
                             success, res = download_and_crop_clip(video_url, s_sec, e_sec, f"clip_{idx}.mp4")
                             if success:
-                                st.success("✅ Clip rendered successfully!")
+                                st.success("✅ Clip rendered!")
                                 with open(res, "rb") as file:
                                     st.download_button(
                                         label=f"💾 Save MP4 File ({clip['start']})",
@@ -356,16 +384,16 @@ if video_url:
                                         key=f"dl_btn_{idx}"
                                     )
                             else:
-                                st.error(f"Failed to extract video clip segment: {res}")
+                                st.error(f"Render Error: {res}")
 
                 with c3:
                     st.markdown(f'''
                         <a href="https://www.capcut.com/editor" target="_blank" style="text-decoration:none;">
                             <button style="width:100%; background-color:#2563eb; color:white; border:none; padding:8px; border-radius:6px; font-weight:bold; cursor:pointer;">
-                                🎬 Edit in CapCut
+                                🎬 Open in CapCut
                             </button>
                         </a>
                     ''', unsafe_allow_html=True)
 
 else:
-    st.info("👈 Paste a YouTube link or podcast URL above to begin full-length scanning.")
+    st.info("👈 Paste a YouTube link or podcast URL above to begin scanning.")
