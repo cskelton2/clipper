@@ -407,3 +407,91 @@ if video_url:
 
 else:
     st.info("👈 Paste a YouTube link or podcast URL above to begin scanning.")
+    # ... existing code ...
+import shutil
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+
+def get_js_runtime_config():
+    """Finds available JS runtimes (deno/node) to pass to yt-dlp to bypass YouTube 403 errors."""
+    runtimes = []
+    if shutil.which("deno"):
+        runtimes.append("deno")
+    if shutil.which("node"):
+        runtimes.append("node")
+    return runtimes
+
+st.set_page_config(
+# ... existing code ...
+def fetch_auto_transcript(yt_id, full_url):
+    """Multi-tiered caption extraction engine bypassing cloud server blocks"""
+    
+    js_runtimes = get_js_runtime_config()
+    js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
+
+    # Tier 1: yt-dlp Subtitle Extraction using mweb / android client proxies
+    client_configs = [
+        ["--extractor-args", "youtube:player_client=mweb,web"],
+        ["--extractor-args", "youtube:player_client=android,ios"],
+        ["--extractor-args", "youtube:player_client=web"]
+    ]
+
+    vtt_prefix = f"caption_{yt_id}"
+
+    for client_args in client_configs:
+        try:
+            # Clean up previous caption files
+            for old_file in glob.glob(f"{vtt_prefix}*"):
+                try: os.remove(old_file)
+                except: pass
+
+            cmd = [
+                "yt-dlp",
+                *js_args,
+                *client_args,
+                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                "--skip-download",
+                "--write-auto-subs",
+                "--write-subs",
+                "--sub-lang", "en.*,en,en-US,en-GB",
+                "--sub-format", "vtt",
+                "-o", f"{vtt_prefix}.%(ext)s",
+                full_url
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+# ... existing code ...
+def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
+    """Render and download video clip segment using yt-dlp & ffmpeg"""
+    try:
+        if os.path.exists(output_filename):
+            os.remove(output_filename)
+
+        js_runtimes = get_js_runtime_config()
+        js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
+
+        cmd = [
+            "yt-dlp",
+            *js_args,
+            "--extractor-args", "youtube:player_client=android,web",
+            "--force-ipv4",
+            "--no-cache-dir",
+            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--download-sections", f"*{start_sec}-{end_sec}",
+            "--force-keyframes-at-cuts",
+            "--no-check-certificates",
+            "-o", output_filename,
+            video_url
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            return False, f"yt-dlp Error: {result.stderr}"
+            
+        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+            return True, output_filename
+        else:
+            return False, "Rendered clip file is empty or missing."
+    except Exception as e:
+        return False, str(e)
+
+if video_url:
+# ... existing code ...
