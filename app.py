@@ -164,20 +164,11 @@ def fetch_auto_transcript(yt_id, full_url):
     js_runtimes = get_js_runtime_config()
     js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-    cookie_args = []
-    cookie_file = get_cookie_file_path()
-    browser = st.session_state.get('browser_cookie', 'None')
-    
-    if cookie_file:
-        cookie_args = ["--cookies", cookie_file]
-    elif browser and browser != "None":
-        cookie_args = ["--cookies-from-browser", browser]
-
-    # Non-interactive client order for background fetching
+    # Non-interactive client configurations optimized for subtitle extraction without triggering bot checks
     client_configs = [
+        ["--extractor-args", "youtube:player_client=tvhtml5,web"],
         ["--extractor-args", "youtube:player_client=mweb,web"],
-        ["--extractor-args", "youtube:player_client=android,ios"],
-        ["--extractor-args", "youtube:player_client=tvhtml5,web"]
+        ["--extractor-args", "youtube:player_client=android_vr,ios"]
     ]
 
     vtt_prefix = f"caption_{yt_id}"
@@ -192,18 +183,17 @@ def fetch_auto_transcript(yt_id, full_url):
             cmd = [
                 "yt-dlp",
                 *js_args,
-                *cookie_args,
                 *client_args,
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "--skip-download",
                 "--write-auto-subs",
                 "--write-subs",
-                "--sub-lang", "en.*,en,en-US,en-GB",
+                "--sub-langs", "en.*,en,en-US,en-GB",
                 "--sub-format", "vtt",
                 "-o", f"{vtt_prefix}.%(ext)s",
                 full_url
             ]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            subprocess.run(cmd, capture_output=True, text=True, timeout=12)
             
             sub_files = glob.glob(f"{vtt_prefix}*.vtt")
             if sub_files:
@@ -216,18 +206,24 @@ def fetch_auto_transcript(yt_id, full_url):
         except Exception:
             continue
 
-    # Tier 2: youtube-transcript-api fallback (works without auth for public videos)
+    # Tier 2: youtube-transcript-api fallback with fallback language handling
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB'])
-        formatted_lines = []
-        for line in transcript_list:
-            start_sec = int(line['start'])
-            hours = start_sec // 3600
-            minutes = (start_sec % 3600) // 60
-            seconds = start_sec % 60
-            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
-            formatted_lines.append(f"[{time_str}] {line['text']}")
-        return "\n".join(formatted_lines)
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB', 'en-CA'])
+        except (NoTranscriptFound, TranscriptsDisabled):
+            # Try fetching any transcript listing available (including generated or translated)
+            transcript_list = YouTubeTranscriptApi.list_transcripts(yt_id).find_transcript(['en']).fetch()
+
+        if transcript_list:
+            formatted_lines = []
+            for line in transcript_list:
+                start_sec = int(line['start'])
+                hours = start_sec // 3600
+                minutes = (start_sec % 3600) // 60
+                seconds = start_sec % 60
+                time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
+                formatted_lines.append(f"[{time_str}] {line['text']}")
+            return "\n".join(formatted_lines)
     except Exception:
         pass
 
