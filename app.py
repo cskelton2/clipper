@@ -9,6 +9,13 @@ import glob
 import shutil
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
+def get_cookie_file_path():
+    """Checks if a exported YouTube cookies file exists in the directory."""
+    for cookie_name in ["cookies.txt", "youtube_cookies.txt", "yt_cookies.txt"]:
+        if os.path.exists(cookie_name):
+            return cookie_name
+    return None
+
 def get_js_runtime_config():
     """Finds available JS runtimes (deno/node) to pass to yt-dlp to bypass YouTube 403 errors."""
     runtimes = []
@@ -80,6 +87,18 @@ with st.sidebar:
     aspect_ratio = st.selectbox("Framing / Aspect Ratio", ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"])
     max_clips = st.slider("Max Clips to Extract", 3, 20, 8)
 
+    st.divider()
+    st.subheader("🔑 YouTube Authentication")
+    
+    # Cookie Uploader to pass human authentication session
+    uploaded_cookie = st.file_uploader("Upload cookies.txt (Bypasses Bot Block)", type=["txt"])
+    if uploaded_cookie:
+        with open("cookies.txt", "wb") as f:
+            f.write(uploaded_cookie.getbuffer())
+        st.success("✅ Cookies loaded successfully!")
+
+    browser_cookie = st.selectbox("Auto-Extract Browser Cookies", ["None", "chrome", "firefox", "edge", "safari", "brave"])
+
 if api_key:
     genai.configure(api_key=api_key)
 
@@ -141,7 +160,16 @@ def fetch_auto_transcript(yt_id, full_url):
     js_runtimes = get_js_runtime_config()
     js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-    # Updated fallback client tiers that bypass bot verification and PO token requirements
+    # Inject Cookies if provided via upload or browser export
+    cookie_args = []
+    cookie_file = get_cookie_file_path()
+    browser = st.session_state.get('browser_cookie', 'None')
+    
+    if cookie_file:
+        cookie_args = ["--cookies", cookie_file]
+    elif browser and browser != "None":
+        cookie_args = ["--cookies-from-browser", browser]
+
     client_configs = [
         ["--extractor-args", "youtube:player_client=tvhtml5,web_creator"],
         ["--extractor-args", "youtube:player_client=android_vr,web"],
@@ -160,6 +188,7 @@ def fetch_auto_transcript(yt_id, full_url):
             cmd = [
                 "yt-dlp",
                 *js_args,
+                *cookie_args,
                 *client_args,
                 "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "--skip-download",
@@ -220,23 +249,33 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-        user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+        # Check for cookies file or browser authentication
+        cookie_args = []
+        cookie_file = get_cookie_file_path()
+        browser = st.session_state.get('browser_cookie', 'None')
+        
+        if cookie_file:
+            cookie_args = ["--cookies", cookie_file]
+        elif browser and browser != "None":
+            cookie_args = ["--cookies-from-browser", browser]
 
-        # Stream extraction client configurations prioritized by anti-bot success
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
         client_configs = [
-            "youtube:player_client=ios,android",
-            "youtube:player_client=web_creator,tvhtml5",
-            "youtube:player_client=android_vr,web"
+            "youtube:player_client=web,tvhtml5",
+            "youtube:player_client=android_vr,ios",
+            "youtube:player_client=web_creator"
         ]
 
         stream_url = None
         last_error = ""
 
-        # Step 1: Extract direct stream URL via yt-dlp -g
+        # Step 1: Extract direct stream URL via yt-dlp -g with cookies
         for client_opt in client_configs:
             cmd_get_url = [
                 "yt-dlp",
                 *js_args,
+                *cookie_args,
                 "--extractor-args", client_opt,
                 "--user-agent", user_agent,
                 "-g",
@@ -245,13 +284,12 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             ]
             res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=30)
             if res.returncode == 0 and res.stdout.strip():
-                # Take the first stream URL returned
                 stream_url = res.stdout.strip().split('\n')[0]
                 break
             else:
                 last_error = res.stderr
 
-        # Step 2: Use FFmpeg with User-Agent HTTP Headers to trim directly from the stream URL
+        # Step 2: Stream cut via FFmpeg
         if stream_url:
             duration = max(1, end_sec - start_sec)
             ffmpeg_cmd = [
@@ -272,11 +310,12 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             else:
                 last_error = ffmpeg_res.stderr
 
-        # Step 3: Fallback - Native yt-dlp trimmed download if direct HTTP streaming fails
+        # Step 3: Native yt-dlp section download fallback with cookies
         fallback_cmd = [
             "yt-dlp",
             *js_args,
-            "--extractor-args", "youtube:player_client=ios,web",
+            *cookie_args,
+            "--extractor-args", "youtube:player_client=web,ios",
             "--user-agent", user_agent,
             "--download-sections", f"*{start_sec}-{end_sec}",
             "--force-keyframes-at-cuts",
