@@ -219,13 +219,37 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
     """Render and download video clip segment using Web Proxy APIs + direct stream fallbacks"""
     try:
         if os.path.exists(output_filename):
-            os.remove(output_filename)
+            try: os.remove(output_filename)
+            except: pass
 
         yt_id = parse_youtube_id(video_url)
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        duration = max(1, end_sec - start_sec)
+
+        # Stage 1: Try direct stream fetch & trim with yt-dlp + ffmpeg pipeline
+        js_runtimes = get_js_runtime_config()
+        js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
+        
+        ytdlp_cmd = [
+            "yt-dlp",
+            *js_args,
+            "--user-agent", user_agent,
+            "--extractor-args", "youtube:player_client=android,mweb,web",
+            "--download-sections", f"*{start_sec}-{end_sec}",
+            "-f", "b[ext=mp4]/best[ext=mp4]/best",
+            "-o", output_filename,
+            video_url
+        ]
+        
+        res = subprocess.run(ytdlp_cmd, capture_output=True, text=True, timeout=90)
+        
+        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+            return True, output_filename
+
+        # Stage 2: Fallback - Extract URL and use robust FFmpeg stream download with complete headers
         stream_url = None
 
-        # Method 1: Query Cobalt API endpoints
+        # Try Cobalt APIs
         cobalt_endpoints = [
             "https://co.wuk.sh/api/json",
             "https://api.cobalt.tools/api/json",
@@ -252,7 +276,7 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             except Exception:
                 continue
 
-        # Method 2: Query Invidious API instances
+        # Try Invidious APIs
         if not stream_url and yt_id:
             invidious_instances = [
                 f"https://invidious.nerdvpn.de/api/v1/videos/{yt_id}",
@@ -273,63 +297,31 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                 except Exception:
                     continue
 
-        # Method 3: Direct yt-dlp stream link retrieval with client overrides
-        if not stream_url:
-            js_runtimes = get_js_runtime_config()
-            js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
-            cmd_get_url = [
-                "yt-dlp",
-                *js_args,
-                "--user-agent", user_agent,
-                "--extractor-args", "youtube:player_client=android,mweb,web",
-                "-g",
-                "-f", "b[ext=mp4]/best[ext=mp4]/best",
-                video_url
-            ]
-            res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=20)
-            if res.returncode == 0 and res.stdout.strip():
-                stream_url = res.stdout.strip().split('\n')[0]
-
-        # Execute stream cut via FFmpeg
         if stream_url:
-            duration = max(1, end_sec - start_sec)
+            # FFmpeg execution with full HTTP authentication headers
+            headers_str = f"User-Agent: {user_agent}\r\nReferer: https://www.youtube.com/\r\nAccept: */*\r\n"
             
-            # Fast stream copy trim
-            ffmpeg_cmd = [
+            ffmpeg_reencode_cmd = [
                 "ffmpeg",
                 "-y",
-                "-headers", f"User-Agent: {user_agent}\r\n",
+                "-headers", headers_str,
                 "-ss", str(start_sec),
                 "-i", stream_url,
                 "-t", str(duration),
-                "-c", "copy",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "24",
+                "-c:a", "aac",
+                "-b:a", "128k",
                 "-avoid_negative_ts", "make_zero",
                 output_filename
             ]
-            subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=45)
-            
-            # Re-encode fallback if stream copy failed or produced zero-byte file
-            if not os.path.exists(output_filename) or os.path.getsize(output_filename) == 0:
-                ffmpeg_reencode_cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-headers", f"User-Agent: {user_agent}\r\n",
-                    "-ss", str(start_sec),
-                    "-i", stream_url,
-                    "-t", str(duration),
-                    "-c:v", "libx264",
-                    "-preset", "ultrafast",
-                    "-c:a", "aac",
-                    output_filename
-                ]
-                subprocess.run(ffmpeg_reencode_cmd, capture_output=True, text=True, timeout=60)
+            subprocess.run(ffmpeg_reencode_cmd, capture_output=True, text=True, timeout=75)
 
             if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
                 return True, output_filename
-            else:
-                return False, "FFmpeg failed to assemble output file."
 
-        return False, "Could not fetch stream URL from proxy APIs or direct stream extractors."
+        return False, "FFmpeg stream extraction failed. Video host blocked connection or file is unreadable."
     except Exception as e:
         return False, str(e)
 
