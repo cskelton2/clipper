@@ -7,6 +7,7 @@ import os
 import subprocess
 import glob
 import shutil
+import asyncio
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 def get_cookie_file_path():
@@ -240,11 +241,12 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp + Android TV / Public endpoints"""
+    """Render and download video clip segment using yt-dlp + Public API Fallbacks"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
 
+        yt_id = parse_youtube_id(video_url)
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
@@ -255,10 +257,10 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
 
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-        # Client configurations that bypass bot verification without requiring OAuth tokens
+        # Updated valid YouTube player clients (removed obsolete tvhtml5)
         client_configs = [
-            "youtube:player_client=tvhtml5,web",
-            "youtube:player_client=android_tv,web",
+            "youtube:player_client=ios,web",
+            "youtube:player_client=android,mweb",
             "youtube:player_client=web_creator"
         ]
 
@@ -284,7 +286,28 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             else:
                 last_error = res.stderr
 
-        # Step 2: Stream cut via FFmpeg
+        # Step 2: If yt-dlp was blocked by YouTube bot checks, fallback to Invidious API stream resolution
+        if not stream_url and yt_id:
+            invidious_instances = [
+                f"https://invidious.nerdvpn.de/api/v1/videos/{yt_id}",
+                f"https://vid.puffyan.us/api/v1/videos/{yt_id}",
+                f"https://inv.riverside.rocks/api/v1/videos/{yt_id}"
+            ]
+            for inv_url in invidious_instances:
+                try:
+                    req = urllib.request.Request(inv_url, headers={'User-Agent': user_agent})
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        v_data = json.loads(response.read().decode())
+                        format_streams = v_data.get('formatStreams', [])
+                        if format_streams:
+                            # Select highest resolution MP4 video stream
+                            stream_url = format_streams[-1].get('url')
+                            if stream_url:
+                                break
+                except Exception:
+                    continue
+
+        # Step 3: Stream cut via FFmpeg
         if stream_url:
             duration = max(1, end_sec - start_sec)
             ffmpeg_cmd = [
@@ -305,12 +328,12 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             else:
                 last_error = ffmpeg_res.stderr
 
-        # Step 3: Native yt-dlp fallback
+        # Step 4: Native yt-dlp section download fallback
         fallback_cmd = [
             "yt-dlp",
             *js_args,
             *cookie_args,
-            "--extractor-args", "youtube:player_client=tvhtml5,web",
+            "--extractor-args", "youtube:player_client=ios,web",
             "--user-agent", user_agent,
             "--download-sections", f"*{start_sec}-{end_sec}",
             "--force-keyframes-at-cuts",
