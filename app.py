@@ -440,3 +440,4 @@ if video_url:
                     ''', unsafe_allow_html=True)
 
 else:
+    st.info("👈 Paste a YouTube link or podcast URL above to begin scanning.")
