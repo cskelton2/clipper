@@ -223,10 +223,11 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         cmd = [
             "yt-dlp",
             *js_args,
-            "--extractor-args", "youtube:player_client=android,web",
+            "--extractor-args", "youtube:player_client=mweb,ios,web",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "--force-ipv4",
             "--no-cache-dir",
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
             "--download-sections", f"*{start_sec}-{end_sec}",
             "--force-keyframes-at-cuts",
             "--no-check-certificates",
