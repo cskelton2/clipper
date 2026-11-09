@@ -88,29 +88,6 @@ with st.sidebar:
     aspect_ratio = st.selectbox("Framing / Aspect Ratio", ["9:16 Vertical (TikTok/Reels)", "1:1 Square (Instagram)", "16:9 Widescreen (YouTube)"])
     max_clips = st.slider("Max Clips to Extract", 3, 20, 8)
 
-    st.divider()
-    st.subheader("🔑 YouTube Authentication")
-    
-    # Quick Tutorial Expander
-    with st.expander("📖 Quick 3-Step Cookie Tutorial (Bypass Bot Check)"):
-        st.markdown("""
-        1. **Install Extension**: Add **"Get cookies.txt LOCALLY"** (Chrome/Firefox).
-        2. **Open YouTube**: Go to [YouTube.com](https://youtube.com) while signed into your Google account.
-        3. **Export & Copy**: Click the extension icon, click **Export**, and drag the `cookies.txt` file below (or copy & paste the text).
-        """)
-
-    # Cookie Uploader & Text Box for Authentication
-    uploaded_cookie = st.file_uploader("Upload cookies.txt (Bypasses Bot Block)", type=["txt"])
-    if uploaded_cookie:
-        with open("cookies.txt", "wb") as f:
-            f.write(uploaded_cookie.getbuffer())
-        st.success("✅ Cookies loaded successfully!")
-
-    raw_cookies = st.text_area("Or Paste Raw Cookie Header/Text:", placeholder="# Netscape HTTP Cookie File or raw cookie string...", height=80)
-    if raw_cookies:
-        with open("cookies.txt", "w") as f:
-            f.write(raw_cookies)
-
 if api_key:
     genai.configure(api_key=api_key)
 
@@ -169,52 +146,7 @@ def parse_vtt_subtitles(vtt_path):
 def fetch_auto_transcript(yt_id, full_url):
     """Multi-tiered caption extraction engine bypassing cloud server blocks"""
     
-    js_runtimes = get_js_runtime_config()
-    js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
-
-    # Non-interactive client configurations optimized for subtitle extraction without triggering bot checks
-    client_configs = [
-        ["--extractor-args", "youtube:player_client=tvhtml5,web"],
-        ["--extractor-args", "youtube:player_client=mweb,web"],
-        ["--extractor-args", "youtube:player_client=android_vr,ios"]
-    ]
-
-    vtt_prefix = f"caption_{yt_id}"
-
-    for client_args in client_configs:
-        try:
-            # Clean up previous caption files
-            for old_file in glob.glob(f"{vtt_prefix}*"):
-                try: os.remove(old_file)
-                except: pass
-
-            cmd = [
-                "yt-dlp",
-                *js_args,
-                *client_args,
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "--skip-download",
-                "--write-auto-subs",
-                "--write-subs",
-                "--sub-langs", "en.*,en,en-US,en-GB",
-                "--sub-format", "vtt",
-                "-o", f"{vtt_prefix}.%(ext)s",
-                full_url
-            ]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=12)
-            
-            sub_files = glob.glob(f"{vtt_prefix}*.vtt")
-            if sub_files:
-                parsed_text = parse_vtt_subtitles(sub_files[0])
-                for sf in sub_files:
-                    try: os.remove(sf)
-                    except: pass
-                if parsed_text and len(parsed_text) > 50:
-                    return parsed_text
-        except Exception:
-            continue
-
-    # Tier 2: youtube-transcript-api fallback with fallback language handling
+    # Tier 1: youtube-transcript-api fallback with fallback language handling
     try:
         try:
             transcript_list = YouTubeTranscriptApi.get_transcript(yt_id, languages=['en', 'en-US', 'en-GB', 'en-CA'])
@@ -235,6 +167,41 @@ def fetch_auto_transcript(yt_id, full_url):
     except Exception:
         pass
 
+    # Tier 2: Lightweight public yt-dlp check
+    js_runtimes = get_js_runtime_config()
+    js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
+    vtt_prefix = f"caption_{yt_id}"
+
+    try:
+        for old_file in glob.glob(f"{vtt_prefix}*"):
+            try: os.remove(old_file)
+            except: pass
+
+        cmd = [
+            "yt-dlp",
+            *js_args,
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "--skip-download",
+            "--write-auto-subs",
+            "--write-subs",
+            "--sub-langs", "en.*,en,en-US",
+            "--sub-format", "vtt",
+            "-o", f"{vtt_prefix}.%(ext)s",
+            full_url
+        ]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+        
+        sub_files = glob.glob(f"{vtt_prefix}*.vtt")
+        if sub_files:
+            parsed_text = parse_vtt_subtitles(sub_files[0])
+            for sf in sub_files:
+                try: os.remove(sf)
+                except: pass
+            if parsed_text and len(parsed_text) > 50:
+                return parsed_text
+    except Exception:
+        pass
+
     return None
 
 def timestamp_to_seconds(ts_str):
@@ -249,52 +216,42 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp + Public API Fallbacks"""
+    """Render and download video clip segment using Web Proxy APIs + FFmpeg"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
 
         yt_id = parse_youtube_id(video_url)
-        js_runtimes = get_js_runtime_config()
-        js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
-
-        cookie_args = []
-        cookie_file = get_cookie_file_path()
-        if cookie_file:
-            cookie_args = ["--cookies", cookie_file]
-
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
-        # Updated valid YouTube player clients (removed obsolete tvhtml5)
-        client_configs = [
-            "youtube:player_client=ios,web",
-            "youtube:player_client=android,mweb",
-            "youtube:player_client=web_creator"
-        ]
-
         stream_url = None
-        last_error = ""
 
-        # Step 1: Extract direct stream URL via yt-dlp -g
-        for client_opt in client_configs:
-            cmd_get_url = [
-                "yt-dlp",
-                *js_args,
-                *cookie_args,
-                "--extractor-args", client_opt,
-                "--user-agent", user_agent,
-                "-g",
-                "-f", "b[ext=mp4]/best[ext=mp4]/best",
-                video_url
-            ]
-            res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=35)
-            if res.returncode == 0 and res.stdout.strip():
-                stream_url = res.stdout.strip().split('\n')[0]
-                break
-            else:
-                last_error = res.stderr
+        # Method 1: Query Cobalt API for direct MP4 stream URL (Zero-auth Web Engine)
+        cobalt_endpoints = [
+            "https://co.wuk.sh/api/json",
+            "https://api.cobalt.tools/api/json"
+        ]
+        
+        for ep in cobalt_endpoints:
+            try:
+                payload = json.dumps({"url": video_url, "vQuality": "720"}).encode('utf-8')
+                req = urllib.request.Request(
+                    ep,
+                    data=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'User-Agent': user_agent
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=7) as resp:
+                    res_data = json.loads(resp.read().decode())
+                    if res_data.get("url"):
+                        stream_url = res_data.get("url")
+                        break
+            except Exception:
+                continue
 
-        # Step 2: If yt-dlp was blocked by YouTube bot checks, fallback to Invidious API stream resolution
+        # Method 2: Query Invidious Open APIs if Cobalt is busy
         if not stream_url and yt_id:
             invidious_instances = [
                 f"https://invidious.nerdvpn.de/api/v1/videos/{yt_id}",
@@ -308,14 +265,29 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                         v_data = json.loads(response.read().decode())
                         format_streams = v_data.get('formatStreams', [])
                         if format_streams:
-                            # Select highest resolution MP4 video stream
                             stream_url = format_streams[-1].get('url')
                             if stream_url:
                                 break
                 except Exception:
                     continue
 
-        # Step 3: Stream cut via FFmpeg
+        # Method 3: Direct yt-dlp fallback link query
+        if not stream_url:
+            js_runtimes = get_js_runtime_config()
+            js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
+            cmd_get_url = [
+                "yt-dlp",
+                *js_args,
+                "--user-agent", user_agent,
+                "-g",
+                "-f", "b[ext=mp4]/best[ext=mp4]/best",
+                video_url
+            ]
+            res = subprocess.run(cmd_get_url, capture_output=True, text=True, timeout=25)
+            if res.returncode == 0 and res.stdout.strip():
+                stream_url = res.stdout.strip().split('\n')[0]
+
+        # Execute cut via FFmpeg once direct stream URL is resolved
         if stream_url:
             duration = max(1, end_sec - start_sec)
             ffmpeg_cmd = [
@@ -334,29 +306,9 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
             if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
                 return True, output_filename
             else:
-                last_error = ffmpeg_res.stderr
+                return False, f"FFmpeg error: {ffmpeg_res.stderr}"
 
-        # Step 4: Native yt-dlp section download fallback
-        fallback_cmd = [
-            "yt-dlp",
-            *js_args,
-            *cookie_args,
-            "--extractor-args", "youtube:player_client=ios,web",
-            "--user-agent", user_agent,
-            "--download-sections", f"*{start_sec}-{end_sec}",
-            "--force-keyframes-at-cuts",
-            "-f", "b[ext=mp4]/best[ext=mp4]/best",
-            "-o", output_filename,
-            video_url
-        ]
-        fb_res = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=90)
-        
-        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
-            return True, output_filename
-        else:
-            last_error = fb_res.stderr
-
-        return False, f"Auth Bypass Error: {last_error if last_error else 'Could not retrieve video stream.'}"
+        return False, "Could not fetch clean stream from video proxy API."
     except Exception as e:
         return False, str(e)
 
