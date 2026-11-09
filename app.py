@@ -141,10 +141,10 @@ def fetch_auto_transcript(yt_id, full_url):
     js_runtimes = get_js_runtime_config()
     js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-    # Tier 1: yt-dlp Subtitle Extraction using mweb / android client proxies
+    # Updated fallback client tiers that bypass bot verification and PO token requirements
     client_configs = [
-        ["--extractor-args", "youtube:player_client=mweb,web"],
-        ["--extractor-args", "youtube:player_client=android,ios"],
+        ["--extractor-args", "youtube:player_client=tvhtml5,web_creator"],
+        ["--extractor-args", "youtube:player_client=android_vr,web"],
         ["--extractor-args", "youtube:player_client=web"]
     ]
 
@@ -161,7 +161,7 @@ def fetch_auto_transcript(yt_id, full_url):
                 "yt-dlp",
                 *js_args,
                 *client_args,
-                "--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "--skip-download",
                 "--write-auto-subs",
                 "--write-subs",
@@ -212,7 +212,7 @@ def timestamp_to_seconds(ts_str):
         return 0
 
 def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.mp4"):
-    """Render and download video clip segment using yt-dlp & ffmpeg"""
+    """Render and download video clip segment using yt-dlp & ffmpeg with bot-bypass client parameters"""
     try:
         if os.path.exists(output_filename):
             os.remove(output_filename)
@@ -220,29 +220,37 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-        cmd = [
-            "yt-dlp",
-            *js_args,
-            "--extractor-args", "youtube:player_client=mweb,ios,web",
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "--force-ipv4",
-            "--no-cache-dir",
-            "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
-            "--download-sections", f"*{start_sec}-{end_sec}",
-            "--force-keyframes-at-cuts",
-            "--no-check-certificates",
-            "-o", output_filename,
-            video_url
+        # Try client fallbacks to bypass bot-checks and SABR token issues
+        client_options = [
+            "youtube:player_client=tvhtml5,web_creator",
+            "youtube:player_client=android_vr,web",
+            "youtube:player_client=web"
         ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            return False, f"yt-dlp Error: {result.stderr}"
+
+        last_error = ""
+        for client_opt in client_options:
+            cmd = [
+                "yt-dlp",
+                *js_args,
+                "--extractor-args", client_opt,
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "--force-ipv4",
+                "--no-cache-dir",
+                "-f", "b[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+                "--download-sections", f"*{start_sec}-{end_sec}",
+                "--force-keyframes-at-cuts",
+                "--no-check-certificates",
+                "-o", output_filename,
+                video_url
+            ]
             
-        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
-            return True, output_filename
-        else:
-            return False, "Rendered clip file is empty or missing."
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
+                return True, output_filename
+            else:
+                last_error = result.stderr
+
+        return False, f"yt-dlp Error: {last_error}"
     except Exception as e:
         return False, str(e)
 
