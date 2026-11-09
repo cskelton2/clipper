@@ -227,11 +227,11 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
         js_runtimes = get_js_runtime_config()
         js_args = ["--js-runtimes", ",".join(js_runtimes)] if js_runtimes else []
 
-        # Attempt 1: High-compatibility mobile client rotation via yt-dlp
+        # Attempt 1: Standard yt-dlp section extraction with mobile/web fallback arguments
         clients_to_try = [
-            "android_vr,ios",
-            "ios,mweb",
-            "web_creator,android"
+            "mweb,android",
+            "ios,web",
+            "android_vr,ios"
         ]
 
         for client_pair in clients_to_try:
@@ -247,51 +247,15 @@ def download_and_crop_clip(video_url, start_sec, end_sec, output_filename="clip.
                 video_url
             ]
             try:
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
                 if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
                     return True, output_filename
             except Exception:
                 continue
 
-        # Attempt 2: Direct Cobalt API stream proxy fetch
-        cobalt_apis = [
-            "https://co.wuk.sh/api/json",
-            "https://api.cobalt.tools/api/json"
-        ]
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        
-        for ep in cobalt_apis:
-            try:
-                payload = json.dumps({"url": video_url, "vQuality": "720", "isAudioOnly": False}).encode('utf-8')
-                req = urllib.request.Request(
-                    ep,
-                    data=payload,
-                    headers={
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'User-Agent': user_agent
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    res_data = json.loads(resp.read().decode())
-                    stream_url = res_data.get("url")
-                    if stream_url:
-                        ffmpeg_cmd = [
-                            "ffmpeg",
-                            "-y",
-                            "-ss", str(start_sec),
-                            "-i", stream_url,
-                            "-t", str(duration),
-                            "-c", "copy",
-                            output_filename
-                        ]
-                        subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=60)
-                        if os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
-                            return True, output_filename
-            except Exception:
-                continue
-
-        return False, "Cloud host IP blocked by YouTube. Please try again or use direct stream download."
+        # Attempt 2: Generate direct Cobalt web link fallback if server IP is blocked
+        cobalt_web_link = f"https://cobalt.tools/#url={video_url}"
+        return False, f"Cloud host IP blocked server download. [Click here to download directly via client browser]({cobalt_web_link})"
     except Exception as e:
         return False, str(e)
 
@@ -463,7 +427,8 @@ if video_url:
                                         key=f"dl_btn_{idx}"
                                     )
                             else:
-                                st.error(f"Render Error: {res}")
+                                st.warning(f"⚠️ {res}")
+                                st.markdown(f"👉 **Direct Client Download Alternative:** [Open Video on Cobalt.tools](https://cobalt.tools)")
 
                 with c3:
                     st.markdown(f'''
@@ -475,4 +440,3 @@ if video_url:
                     ''', unsafe_allow_html=True)
 
 else:
-    st.info("👈 Paste a YouTube link or podcast URL above to begin scanning.")
